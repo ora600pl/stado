@@ -188,7 +188,7 @@ func main() {
 			sqlTxt = "_"
 			//log.Println(packet)
 			log.Println("Created tcp and ipv4 fields based on layers")
-			foundValidPacket := false
+			foundValidPacket := true //flag to filter out packets for testing purposes
 			for _, checkIP := range dbIPs {
 				log.Println("Checking if " + ipv4.SrcIP.String() + " or " + ipv4.DstIP.String() + " contains " + string(checkIP))
 				if strings.Contains(ipv4.SrcIP.String(), strings.TrimSpace(checkIP)) {
