@@ -38,6 +38,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/ora600pl/stado/sqlid"
 	"github.com/wcharczuk/go-chart"
+	"github.com/wcharczuk/go-chart/drawing"
 )
 
 func StdDev(x []float64) float64 {
@@ -102,6 +103,7 @@ func main() {
 	dbIP := flag.String("i", "", "IP address of database server")
 	dbPort := flag.String("p", "", "Listener port for database server")
 	debug := flag.Int("d", 0, "Debug flag")
+	chartsDir := flag.String("C", "", "<dir> directory path to write SQL Charts i.e. -C DevApp")
 
 	flag.Parse()
 
@@ -113,6 +115,24 @@ func main() {
 
 	if *debug == 0 {
 		log.SetOutput(ioutil.Discard)
+	}
+
+	if *chartsDir == "" {
+		*chartsDir = "./SQLCharts"
+		if _, err := os.Stat(*chartsDir); os.IsNotExist(err) {
+			err = os.Mkdir(*chartsDir, 0755)
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(2)
+			}
+			fmt.Println("All SQL Charts will be saved into " + *chartsDir + " dierectory\n")
+		}
+	} else if _, err := os.Stat(*chartsDir); os.IsNotExist(err) {
+		err = os.Mkdir(*chartsDir, 0755)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(2)
+		}
 	}
 
 	dbIPs := strings.Split(*dbIP, "or")
@@ -249,10 +269,40 @@ func main() {
 			SQLIdStats[sqlid].Packets,
 			len(SQLIdStats[sqlid].Sessions))
 		graphVal = append(graphVal, chart.Value{Value: SQLIdStats[sqlid].Elapsed_ms_sum / float64(SQLIdStats[sqlid].Executions), Label: sqlid})
+		var execs []float64
+		for exec := 0; exec < int(SQLIdStats[sqlid].Executions); exec++ {
+			execs = append(execs, float64(exec))
+		}
+		SQLgraph := chart.Chart{
+			Title: sqlid + " elapsed time per execution (ms)",
+			Background: chart.Style{
+				Padding: chart.Box{
+					Top:    40,
+					Bottom: 10,
+				},
+			},
+			Series: []chart.Series{
+				chart.ContinuousSeries{
+					Style: chart.Style{
+						StrokeColor: drawing.ColorRed,               // will supercede defaults
+						FillColor:   drawing.ColorRed.WithAlpha(64), // will supercede defaults
+					},
+					XValues: execs,
+					YValues: SQLIdStats[sqlid].Elapsed_ms_all,
+				},
+			},
+		}
+
+		f, err := os.Create(*chartsDir + "/" + sqlid + ".png")
+		if err != nil {
+			log.Println(err)
+		}
+		defer f.Close()
+		SQLgraph.Render(chart.PNG, f)
 	}
 
 	graph := chart.BarChart{
-		Title: "SQLid Elapsed Time per Execution (ms)",
+		Title: "SQLid Elapsed Time Summary (ms)",
 		Background: chart.Style{
 			Padding: chart.Box{
 				Top:    100,
@@ -263,10 +313,13 @@ func main() {
 		Width:    2000,
 		BarWidth: 7,
 		XAxis:    chart.Style{TextRotationDegrees: 90.0},
-		Bars:     graphVal,
+		Bars:     graphVal, //[]chart.Value of Value: Label:
 	}
 
-	f, _ := os.Create("sql_ela_exec.png")
+	f, err := os.Create(*chartsDir + "/" + "_sql_ela_exec.png")
+	if err != nil {
+		log.Println(err)
+	}
 	defer f.Close()
 	graph.Render(chart.PNG, f)
 
