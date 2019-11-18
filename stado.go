@@ -177,6 +177,9 @@ func main() {
 	tnsPacketData := byte(6) //TNS Header at@4
 
 	sqlTxtFlow := make(map[string] string)
+
+	var tBegin, tEnd time.Time
+
 	for packet := range packetSource.Packets() {
 		log.Println("Started packets loop")
 		if app := packet.ApplicationLayer(); app != nil {
@@ -207,7 +210,7 @@ func main() {
 			}
 			log.Println("Defined app and db ports")
 			conversationId := found_dbIp + ":" + found_dbPort + "<->" + appIp + ":" + appPort
-			log.Println("Created conversation id", conversationId)
+			log.Println("Created conversation id", conversationId, tcp.Seq, tcp.Ack)
 
 			if strings.Contains(tcp.DstPort.String(), *dbPort) {
 				if mi := rSQL.FindStringIndex(string(app.Payload())); mi != nil &&
@@ -224,7 +227,7 @@ func main() {
 					}
 					sqlTxt = string(app.Payload()[mi[0] : mi[0]+sqlLen])
 					sqlTxtFlow[conversationId] = sqlTxt
-					log.Println("SQLFlow for conversation ", conversationId, sqlTxtFlow[conversationId])
+					log.Println("SQLFlow for conversation ", conversationId, sqlTxtFlow[conversationId], sqlid.Get(sqlTxt))
 					log.Println("Found SQL Text based on regular expression")
 					foundValidPacket = true
 
@@ -248,7 +251,7 @@ func main() {
                                                         sqlTxtFlow[conversationId] = "_"
                                         }
 					foundValidPacket = true
-				} else if !strings.Contains(string(app.Payload()), "AUTH") && app.Payload()[4] == tnsPacketData {
+				} else if len(app.Payload()) > 20 && !strings.Contains(string(app.Payload()), "AUTH") && app.Payload()[4] == tnsPacketData {
 					if app.Payload()[10] == retOpiParam {
 						cursorSlot := strconv.Itoa(int(app.Payload()[21]))
 						log.Println("Cursor Slot in RetOpiParam is: ", cursorSlot, appPort, tcp.Seq)
@@ -272,6 +275,14 @@ func main() {
 			}
 
 			if foundValidPacket {
+				if len(sqlTxt) == 0 {
+					sqlTxt = "_"
+				}
+				if tBegin.IsZero() {
+					tBegin = packet.Metadata().Timestamp
+				}
+				tEnd = packet.Metadata().Timestamp
+
 				Conversations[conversationId] = append(Conversations[conversationId], SQLtcp{SQL: sqlTxt,
 					SQL_id:       sqlid.Get(sqlTxt),
 					Conversation: conversationId,
@@ -280,7 +291,7 @@ func main() {
 					Ack:          tcp.Ack,
 					Timestamp:    packet.Metadata().Timestamp,
 				})
-				log.Println("Added packaet to conversation ID: " + conversationId)
+				log.Println("Added packaet to conversation ID: " + conversationId, sqlTxt, sqlid.Get(sqlTxt), len(sqlTxt))
 			}
 		}
 	}
@@ -360,6 +371,8 @@ func main() {
 		defer f.Close()
 		SQLgraph.Render(chart.PNG, f)
 	}
+
+	fmt.Println("\n\n\tTime frame: ", tBegin, " <=> ", tEnd)
 
 	graph := chart.BarChart{
 		Title: "SQLid Elapsed Time Summary (ms)",
