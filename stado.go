@@ -339,8 +339,8 @@ func main() {
 	for c := range Conversations {
 		log.Println(c)
 		//sort.Sort(SQLtcpSort(Conversations[c]))
-		var tB, tE time.Time
-		var sqlDuration time.Duration
+		var tB, tE, tPrev time.Time
+		var sqlDuration, packetDuration time.Duration
 		sqlTxt := "+"
 		sqlId := "+"
 		pcktCnt := uint(0)
@@ -348,6 +348,12 @@ func main() {
 
 		for _, p := range Conversations[c] {
 			log.Println(p.SQL, p.Seq, p.Ack)
+			if tPrev.IsZero() {
+				tPrev = p.Timestamp
+				packetDuration = p.Timestamp.Sub(tPrev)
+			} else {
+				packetDuration = p.Timestamp.Sub(tPrev)
+			}
 			pcktCnt += 1
 			if p.SQL != "_" && p.SQL != "SQL_END" {
 				tB = p.Timestamp
@@ -360,7 +366,8 @@ func main() {
 
 				tE = p.Timestamp
 				sqlDuration = tE.Sub(tB)
-				log.Println("\t", sqlDuration, sqlId, sqlTxt, c)
+				//sqlDuration = packetDuration
+				log.Println("\t", sqlDuration, packetDuration, sqlId, sqlTxt, c)
 
 				if _, ok := SQLIdStats[sqlId]; !ok {
 					SQLIdStats[sqlId] = &SQLstats{SQLtxt: "", Elapsed_ms_sum: 0, Executions: 0, Packets: 0,
@@ -370,6 +377,7 @@ func main() {
 				sqlTxt = "+"
 				sqlId = "+"
 				pcktCnt = 0
+				tPrev = time.Time{}
 				reusedCursors = 0
 			}
 		}
