@@ -260,18 +260,20 @@ func main() {
 				}
 			} else {
 				if strings.Contains(string(app.Payload()), "ORA-01403") {
+
 					sqlTxt = "SQL_END"
 					endOfDataI := bytes.Index(app.Payload(), endOfDataFlag)
 					log.Println("End Of Data Byte is: ", endOfDataI)
 					cursorSlot := strconv.Itoa(int(app.Payload()[endOfDataI+6]))
 					log.Println("Cursor Slot is: ", cursorSlot)
 
-					if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
+					/*if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
                                                         SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
                                                         sqlTxtFlow[conversationId] = "_"
-                                        }
-
+                                        }*/
+					SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 					foundValidPacket = true
+
 				} else if len(app.Payload()) > 20 &&
 					  !strings.Contains(string(app.Payload()), "AUTH") &&
 					  app.Payload()[4] == tnsPacketData {
@@ -280,27 +282,31 @@ func main() {
 						cursorSlot := strconv.Itoa(int(app.Payload()[21]))
 						log.Println("Cursor Slot in RetOpiParam is: ", cursorSlot, appPort, tcp.Seq)
 
-						if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
+						/*if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
 							SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 							log.Println("Set slot ", conversationId + "_" + cursorSlot, " to: " ,
 									sqlTxtFlow[conversationId])
 
 							sqlTxtFlow[conversationId] = "_"
-						}
+						}*/
+						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
 
 					} else if app.Payload()[10] == retStatus {
+
 						cursorSlot := strconv.Itoa(int(app.Payload()[28]))
                                                 log.Println("Cursor Slot in RetStatus is: ", cursorSlot, appPort, tcp.Seq)
 
-						if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
+						/*if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
                                                         SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 							log.Println("Set slot ", conversationId + "_" + cursorSlot, " to: " ,
 									sqlTxtFlow[conversationId])
 
                                                         sqlTxtFlow[conversationId]= "_"
-                                                }
+                                                }*/
+						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
+
 					}
 				}
 			}
