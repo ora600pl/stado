@@ -375,14 +375,14 @@ func main() {
 		}
 	}
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
-	fmt.Println("SQL ID\t\tEla (ms)\tEla stddev\tExec\tEla/Exec\tP\tS\tRC")
+	fmt.Println("SQL ID\t\tEla (ms)\tExec\tEla stddev\tEla/Exec\tP\tS\tRC")
 	fmt.Println("---------------------------------------------------------------------------------------------\n")
 	var graphVal []chart.Value
 	for sqlid := range SQLIdStats {
-		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%d\t%d\t%d\n", sqlid,
+		fmt.Printf("%s\t%f\t%d\t%f\t%f\t%d\t%d\t%d\n", sqlid,
 			SQLIdStats[sqlid].Elapsed_ms_sum,
-			StdDev(SQLIdStats[sqlid].Elapsed_ms_all),
 			SQLIdStats[sqlid].Executions,
+			StdDev(SQLIdStats[sqlid].Elapsed_ms_all),
 			SQLIdStats[sqlid].Elapsed_ms_sum/float64(SQLIdStats[sqlid].Executions),
 			SQLIdStats[sqlid].Packets,
 			len(SQLIdStats[sqlid].Sessions),
