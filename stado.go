@@ -155,6 +155,7 @@ func main() {
 	SQLslot := make(map[string]string)
 	reqTimestamp := make(map[string] time.Time)
 	resTimestamp := make(map[string] time.Time)
+	ipTnsBytes := make(map[string] uint64)
 
 	handle, err := pcap.OpenOffline(*pcapFile)
 	if err != nil {
@@ -226,6 +227,9 @@ func main() {
 			log.Println("Defined app and db ports")
 			conversationId := found_dbIp + ":" + found_dbPort + "<->" + appIp + ":" + appPort
 			log.Println("Created conversation id", conversationId, tcp.Seq, tcp.Ack)
+
+			ipTnsBytes[found_dbIp] += uint64(len(app.Payload()))
+			log.Println("TNS bytes sent over IP address: ", ipTnsBytes)
 
 			if strings.Contains(tcp.DstPort.String(), *dbPort) {
 				reqTimestamp[conversationId] = packet.Metadata().Timestamp
@@ -411,6 +415,7 @@ func main() {
 	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net (ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
 	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
 	var graphVal []chart.Value
+	var sumApp, sumNet float64
 	for sqlid := range SQLIdStats {
 		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid,
 			SQLIdStats[sqlid].Elapsed_ms_app,
@@ -423,6 +428,10 @@ func main() {
 			SQLIdStats[sqlid].Packets,
 			len(SQLIdStats[sqlid].Sessions),
 			SQLIdStats[sqlid].ReusedCursors)
+
+		sumApp += SQLIdStats[sqlid].Elapsed_ms_app
+		sumNet += SQLIdStats[sqlid].Elapsed_ms_sum
+
 		graphVal = append(graphVal, chart.Value{Value:
 				SQLIdStats[sqlid].Elapsed_ms_sum /
 						float64(SQLIdStats[sqlid].Executions), Label: sqlid})
@@ -457,6 +466,13 @@ func main() {
 		}
 		defer f.Close()
 		SQLgraph.Render(chart.PNG, f)
+	}
+
+	fmt.Println("\nSum App Time(s):", sumApp/1000)
+	fmt.Println("Sum Net Time(s):", sumNet/1000, "\n")
+
+	for ip := range(ipTnsBytes) {
+		fmt.Println(ip, ipTnsBytes[ip]/1024, "kb")
 	}
 
 	fmt.Println("\n\n\tTime frame: ", tBegin, " <=> ", tEnd)
