@@ -67,6 +67,7 @@ type SQLtcp struct {
 	Ack          uint32
 	Timestamp    time.Time
 	IsReused     uint
+	RTT	     int64
 }
 
 type SQLtcpSort []SQLtcp
@@ -79,15 +80,17 @@ var Conversations map[string][]SQLtcp
 
 type SQLstats struct {
 	SQLtxt         string
-	Elapsed_ms_all []float64
-	Elapsed_ms_sum float64
+	Elapsed_ms_all []float64 //Elapsed time from net perspective
+	Elapsed_ms_sum float64 //All elapsed times from net perspective per packet
 	Executions     uint
 	Packets        uint
 	Sessions       map[string]uint
 	ReusedCursors  uint
+	Elapsed_ms_app float64 //Wallclock from the whole app perspective
+	Ela_ms_app_all []float64 //Elapsed time from app perspective
 }
 
-func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet_cnt uint, reusedCursors uint) {
+func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet_cnt uint, reusedCursors uint, sqlApp int64) {
 	s.SQLtxt = sqlTxt
 	s.Elapsed_ms_all = append(s.Elapsed_ms_all, float64(sqlDuration)/1000000)
 	s.Elapsed_ms_sum += float64(sqlDuration) / 1000000
@@ -95,6 +98,8 @@ func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet
 	s.Packets += packet_cnt
 	s.Sessions[session] = 1
 	s.ReusedCursors += reusedCursors
+	s.Elapsed_ms_app += float64(sqlApp) / 1000000
+	s.Ela_ms_app_all = append(s.Ela_ms_app_all, float64(sqlApp)/1000000)
 }
 
 var SQLIdStats map[string]*SQLstats
@@ -148,6 +153,8 @@ func main() {
 	SQLIdStats = make(map[string]*SQLstats)
 
 	SQLslot := make(map[string]string)
+	reqTimestamp := make(map[string] time.Time)
+	resTimestamp := make(map[string] time.Time)
 
 	handle, err := pcap.OpenOffline(*pcapFile)
 	if err != nil {
@@ -196,6 +203,7 @@ func main() {
 			//log.Println(packet)
 			log.Println("Created tcp and ipv4 fields based on layers")
 			foundValidPacket := true //flag to filter out packets for testing purposes
+			responsePacket := false
 			for _, checkIP := range dbIPs {
 				log.Println("Checking if " + ipv4.SrcIP.String() +
 						" or " + ipv4.DstIP.String() + " contains " + string(checkIP))
@@ -220,6 +228,7 @@ func main() {
 			log.Println("Created conversation id", conversationId, tcp.Seq, tcp.Ack)
 
 			if strings.Contains(tcp.DstPort.String(), *dbPort) {
+				reqTimestamp[conversationId] = packet.Metadata().Timestamp
 				if mi := rSQL.FindStringIndex(string(app.Payload())); mi != nil &&
 					!strings.Contains(string(app.Payload()), "DESCRIPTION") {
 
@@ -259,6 +268,8 @@ func main() {
 					foundValidPacket = true
 				}
 			} else {
+				resTimestamp[conversationId] = packet.Metadata().Timestamp
+				responsePacket = true
 				if strings.Contains(string(app.Payload()), "ORA-01403") {
 
 					sqlTxt = "SQL_END"
@@ -320,6 +331,11 @@ func main() {
 				}
 				tEnd = packet.Metadata().Timestamp
 
+				rtt := int64(0)
+				if responsePacket {
+					rtt = resTimestamp[conversationId].Sub(reqTimestamp[conversationId]).Nanoseconds()
+				}
+
 				Conversations[conversationId] = append(Conversations[conversationId], SQLtcp{SQL: sqlTxt,
 					SQL_id:       sqlid.Get(sqlTxt),
 					Conversation: conversationId,
@@ -328,6 +344,7 @@ func main() {
 					Ack:          tcp.Ack,
 					Timestamp:    packet.Metadata().Timestamp,
 					IsReused:     reusedCursor,
+					RTT:	      rtt,
 				})
 				log.Println("Added packaet to conversation ID: " +
 						conversationId, sqlTxt, sqlid.Get(sqlTxt), len(sqlTxt), reusedCursor)
@@ -344,6 +361,7 @@ func main() {
 		sqlTxt := "+"
 		sqlId := "+"
 		pcktCnt := uint(0)
+		RTT := int64(0)
 		reusedCursors := uint(0)
 
 		for _, p := range Conversations[c] {
@@ -355,6 +373,7 @@ func main() {
 				packetDuration = p.Timestamp.Sub(tPrev)
 			}
 			pcktCnt += 1
+			RTT += p.RTT
 			if p.SQL != "_" && p.SQL != "SQL_END" {
 				tB = p.Timestamp
 				sqlTxt = p.SQL
@@ -365,38 +384,48 @@ func main() {
 				(len(sqlTxt) > 1 && p.SQL == "_" && sqlTxt[0] != 's' && sqlTxt[0] != 'S')) {
 
 				tE = p.Timestamp
-				sqlDuration = tE.Sub(tB)
-				//sqlDuration = packetDuration
-				log.Println("\t", sqlDuration, packetDuration, sqlId, sqlTxt, c)
+				//sqlDuration = tE.Sub(tB)
+				sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
+				log.Println("\t", sqlDuration, tE.Sub(tB), RTT, sqlId, sqlTxt, c)
 
 				if _, ok := SQLIdStats[sqlId]; !ok {
-					SQLIdStats[sqlId] = &SQLstats{SQLtxt: "", Elapsed_ms_sum: 0, Executions: 0, Packets: 0,
-						Sessions: make(map[string]uint), ReusedCursors: 0}
+					SQLIdStats[sqlId] = &SQLstats{SQLtxt: "",
+						Elapsed_ms_sum: 0, Executions: 0, Packets: 0,
+						Sessions: make(map[string]uint), ReusedCursors: 0,
+						Elapsed_ms_app: 0}
 				}
-				SQLIdStats[sqlId].Fill(sqlTxt, sqlDuration.Nanoseconds(), c, pcktCnt, reusedCursors)
+
+				SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt, reusedCursors, sqlDuration.Nanoseconds())
 				sqlTxt = "+"
 				sqlId = "+"
 				pcktCnt = 0
+				RTT = 0
 				tPrev = time.Time{}
+				tB = time.Time{}
+				tE = time.Time{}
 				reusedCursors = 0
 			}
 		}
 	}
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
-	fmt.Println("SQL ID\t\tEla (ms)\tExec\tEla stddev\tEla/Exec\tP\tS\tRC")
-	fmt.Println("---------------------------------------------------------------------------------------------\n")
+	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net (ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
+	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
 	var graphVal []chart.Value
 	for sqlid := range SQLIdStats {
-		fmt.Printf("%s\t%f\t%d\t%f\t%f\t%d\t%d\t%d\n", sqlid,
+		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid,
+			SQLIdStats[sqlid].Elapsed_ms_app,
 			SQLIdStats[sqlid].Elapsed_ms_sum,
 			SQLIdStats[sqlid].Executions,
+			StdDev(SQLIdStats[sqlid].Ela_ms_app_all),
+			SQLIdStats[sqlid].Elapsed_ms_app/float64(SQLIdStats[sqlid].Executions),
 			StdDev(SQLIdStats[sqlid].Elapsed_ms_all),
 			SQLIdStats[sqlid].Elapsed_ms_sum/float64(SQLIdStats[sqlid].Executions),
 			SQLIdStats[sqlid].Packets,
 			len(SQLIdStats[sqlid].Sessions),
 			SQLIdStats[sqlid].ReusedCursors)
 		graphVal = append(graphVal, chart.Value{Value:
-				SQLIdStats[sqlid].Elapsed_ms_sum / float64(SQLIdStats[sqlid].Executions), Label: sqlid})
+				SQLIdStats[sqlid].Elapsed_ms_sum /
+						float64(SQLIdStats[sqlid].Executions), Label: sqlid})
 
 		var execs []float64
 		for exec := 0; exec < int(SQLIdStats[sqlid].Executions); exec++ {
@@ -430,7 +459,8 @@ func main() {
 		SQLgraph.Render(chart.PNG, f)
 	}
 
-	fmt.Println("\n\n\tTime frame: ", tBegin, " <=> ", tEnd, "\n")
+	fmt.Println("\n\n\tTime frame: ", tBegin, " <=> ", tEnd)
+	fmt.Println("\tTime frame duration (s): ", tEnd.Sub(tBegin).Seconds(), "\n")
 
 	graph := chart.BarChart{
 		Title: "SQLid Elapsed Time Summary (ms)",
