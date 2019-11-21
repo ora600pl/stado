@@ -153,8 +153,8 @@ func main() {
 	SQLIdStats = make(map[string]*SQLstats)
 
 	SQLslot := make(map[string]string)
-	reqTimestamp := make(map[string] time.Time)
-	resTimestamp := make(map[string] time.Time)
+	//reqTimestamp := make(map[string] time.Time)
+	//resTimestamp := make(map[string] time.Time)
 	ipTnsBytes := make(map[string] uint64)
 
 	handle, err := pcap.OpenOffline(*pcapFile)
@@ -235,7 +235,7 @@ func main() {
 			log.Println("TNS bytes sent over IP address: ", ipTnsBytes)
 
 			if strings.Contains(tcp.DstPort.String(), *dbPort) {
-				reqTimestamp[conversationId] = packet.Metadata().Timestamp
+				//reqTimestamp[conversationId] = packet.Metadata().Timestamp
 				if mi := rSQL.FindStringIndex(string(app.Payload())); mi != nil &&
 					!strings.Contains(string(app.Payload()), "DESCRIPTION") {
 
@@ -291,7 +291,7 @@ func main() {
 					foundValidPacket = true
 				}
 			} else {
-				resTimestamp[conversationId] = packet.Metadata().Timestamp
+				//resTimestamp[conversationId] = packet.Metadata().Timestamp
 				responsePacket = true
 				if strings.Contains(string(app.Payload()), "ORA-01403") {
 
@@ -355,8 +355,9 @@ func main() {
 				tEnd = packet.Metadata().Timestamp
 
 				rtt := int64(0)
-				if responsePacket {
-					rtt = resTimestamp[conversationId].Sub(reqTimestamp[conversationId]).Nanoseconds()
+				if responsePacket && len(Conversations[conversationId]) >= 1{
+					lastIdx := len(Conversations[conversationId]) - 1
+					rtt = packet.Metadata().Timestamp.Sub(Conversations[conversationId][lastIdx].Timestamp).Nanoseconds()
 				}
 
 				Conversations[conversationId] = append(Conversations[conversationId], SQLtcp{SQL: sqlTxt,
@@ -370,7 +371,7 @@ func main() {
 					RTT:	      rtt,
 				})
 				log.Println("Added packaet to conversation ID: " +
-						conversationId, sqlTxt, sqlid.Get(sqlTxt), len(sqlTxt), reusedCursor)
+						conversationId, sqlTxt, sqlid.Get(sqlTxt), len(sqlTxt), reusedCursor, rtt)
 				reusedCursor = 0
 			}
 		}
@@ -388,7 +389,7 @@ func main() {
 		reusedCursors := uint(0)
 
 		for _, p := range Conversations[c] {
-			log.Println(p.SQL_id, p.SQL, p.Seq, p.Ack, p.RTT)
+			log.Println(p.SQL_id, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, string(p.SQL[0]), "...")
 			if tPrev.IsZero() {
 				tPrev = p.Timestamp
 				packetDuration = p.Timestamp.Sub(tPrev)
@@ -411,7 +412,7 @@ func main() {
 				tE = p.Timestamp
 				//sqlDuration = tE.Sub(tB)
 				sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
-				log.Println("\t", sqlDuration, tE.Sub(tB), RTT, sqlId, sqlTxt, c)
+				log.Println("\tsummary: ", sqlDuration.Nanoseconds(), tE.Sub(tB).Nanoseconds(), tB, tE, RTT, sqlId)
 
 				if _, ok := SQLIdStats[sqlId]; !ok {
 					SQLIdStats[sqlId] = &SQLstats{SQLtxt: "",
