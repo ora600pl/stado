@@ -488,8 +488,8 @@ func main() {
 		if err != nil {
 			log.Println(err)
 		}
-		defer f.Close()
 		SQLgraph.Render(chart.PNG, f)
+		f.Close()
 	}
 
 	fmt.Println("\nSum App Time(s):", sumApp/1000)
@@ -521,7 +521,7 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
-	defer f.Close()
 	graph.Render(chart.PNG, f)
+	f.Close()
 
 }
