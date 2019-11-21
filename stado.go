@@ -80,11 +80,11 @@ var Conversations map[string][]SQLtcp
 
 type SQLstats struct {
 	SQLtxt         string
-	Elapsed_ms_all []float64 //Elapsed time from net perspective
-	Elapsed_ms_sum float64 //All elapsed times from net perspective per packet
+	Elapsed_ms_all []float64 //Elapsed time from net perspective (RTT) Net Time 
+	Elapsed_ms_sum float64 //All elapsed times from net perspective per packet (RTT) Net Time
 	Executions     uint
 	Packets        uint
-	Sessions       map[string]uint
+	Sessions       map[string]uint //key: ConversationId
 	ReusedCursors  uint
 	Elapsed_ms_app float64 //Wallclock from the whole app perspective
 	Ela_ms_app_all []float64 //Elapsed time from app perspective
@@ -180,6 +180,9 @@ func main() {
 	var appPort, appIp, sqlTxt, found_dbIp, found_dbPort string
 
 	littleEndianFlag := byte(254)
+	bigEndianFlag := byte(0)
+	oneByteSizeFlag := byte(1)
+	uncertainSqlSize := 65279 // 0xFEFF at the beginning of SQL
 	usedCursorFlag := []byte{29, 6} //Packet length 29 and type DATA (0x06)
 	usedCursorFlagAfterError := []byte{48, 6} //Packet length 48 and type DATA (0x06)
 	endOfDataFlag := []byte{123, 5} //Flag in ResonseData 0x7b05 before ORA-01403 at the end of fetch
@@ -241,14 +244,30 @@ func main() {
 					log.Println("Endian flag is: ", endianFlag)
 					sqlLenB := app.Payload()[mi[0]-4 : mi[0]]
 					log.Println("SQL len is: ", sqlLenB)
+					log.Println(packet)
 
 					if endianFlag[0] == littleEndianFlag {
 						sqlLen = int(binary.LittleEndian.Uint32(sqlLenB))
-					} else {
+					} else if endianFlag[0] == bigEndianFlag {
 						sqlLen = int(binary.BigEndian.Uint32(sqlLenB))
+					} else if endianFlag[0] == oneByteSizeFlag {
+						sqlLen = int(sqlLenB[3])
 					}
 
-					sqlTxt = string(app.Payload()[mi[0] : mi[0]+sqlLen])
+					if sqlLen == uncertainSqlSize || sqlLen >= len(app.Payload()[mi[0]-4:]) {
+						log.Println("Can't determine sqlLen size")
+						sqlBufStart := app.Payload()[mi[0]:]
+						sqlTxtEnd := len(sqlBufStart)-1
+						for i, v := range(sqlBufStart) {
+							if int(v) == 0 {
+								sqlTxtEnd = i
+								break
+							}
+						}
+						sqlTxt = string(sqlBufStart[0:sqlTxtEnd])
+					} else {
+						sqlTxt = string(app.Payload()[mi[0] : mi[0]+sqlLen])
+					}
 					sqlTxtFlow[conversationId] = sqlTxt
 
 					log.Println("SQLFlow for conversation ",
@@ -369,7 +388,7 @@ func main() {
 		reusedCursors := uint(0)
 
 		for _, p := range Conversations[c] {
-			log.Println(p.SQL, p.Seq, p.Ack)
+			log.Println(p.SQL_id, p.SQL, p.Seq, p.Ack, p.RTT)
 			if tPrev.IsZero() {
 				tPrev = p.Timestamp
 				packetDuration = p.Timestamp.Sub(tPrev)
@@ -377,12 +396,14 @@ func main() {
 				packetDuration = p.Timestamp.Sub(tPrev)
 			}
 			pcktCnt += 1
-			RTT += p.RTT
+			//RTT += p.RTT
 			if p.SQL != "_" && p.SQL != "SQL_END" {
 				tB = p.Timestamp
 				sqlTxt = p.SQL
 				sqlId = p.SQL_id
 				reusedCursors += p.IsReused
+			} else { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
+				RTT += p.RTT
 			}
 			if sqlId != "+" && (p.SQL == "SQL_END" ||
 				(len(sqlTxt) > 1 && p.SQL == "_" && sqlTxt[0] != 's' && sqlTxt[0] != 'S')) {
@@ -398,8 +419,11 @@ func main() {
 						Sessions: make(map[string]uint), ReusedCursors: 0,
 						Elapsed_ms_app: 0}
 				}
-
-				SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt, reusedCursors, sqlDuration.Nanoseconds())
+				if RTT >= 0 { // Checking if RTT is calculated properly
+					SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt, reusedCursors, sqlDuration.Nanoseconds())
+				} else {
+					log.Println(RTT, sqlTxt, c, sqlId)
+				}
 				sqlTxt = "+"
 				sqlId = "+"
 				pcktCnt = 0
@@ -412,7 +436,7 @@ func main() {
 		}
 	}
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
-	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net (ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
+	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
 	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
 	var graphVal []chart.Value
 	var sumApp, sumNet float64
