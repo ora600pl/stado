@@ -190,13 +190,13 @@ func main() {
 	retStatus := byte(4) //TNS Header at @10
 	tnsPacketData := byte(6) //TNS Header at@4
 
-	sqlTxtFlow := make(map[string] string)
+	sqlTxtFlow := make(map[string] string) //mapa wykonanych polecen sql w danej konwersacji z przypisaniem do slotu otwartego kursora
 
-	var tBegin, tEnd time.Time
-	reusedCursor := uint(0)
+	var tBegin, tEnd time.Time //liczenie horyzontu czasu od: do: z pliku pcap
+	reusedCursor := uint(0) //Licznik uzytych ponownie kursorow z klienta
 
 	for packet := range packetSource.Packets() {
-		log.Println("Started packets loop")
+		log.Println("Started packets loop") //Tylko pakiety z wartstwa aplikacyjna (TNS) beda parsowane
 		if app := packet.ApplicationLayer(); app != nil {
 			tcpLayer := packet.Layer(layers.LayerTypeTCP)
 			ipv4Layer := packet.Layer(layers.LayerTypeIPv4)
@@ -208,6 +208,9 @@ func main() {
 			log.Println("Created tcp and ipv4 fields based on layers")
 			foundValidPacket := true //flag to filter out packets for testing purposes
 			responsePacket := false
+			/*Petla ma na celu ustalenie adresow IP bazy i klienta w badanym pakiecie. 
+			  Odbywa sie to na podstawie porownania zrodlowych i docelowych portow z zadeklarowanym 
+			  portem z flagi "-p" */
 			for _, checkIP := range dbIPs {
 				log.Println("Checking if " + ipv4.SrcIP.String() +
 						" or " + ipv4.DstIP.String() + " contains " + string(checkIP))
@@ -228,17 +231,20 @@ func main() {
 
 			}
 			log.Println("Defined app and db ports")
-			conversationId := found_dbIp + ":" + found_dbPort + "<->" + appIp + ":" + appPort
+			conversationId := found_dbIp + ":" + found_dbPort + "<->" + appIp + ":" + appPort //ID konwersjacji jest kluczem wiekszosci map
 			log.Println("Created conversation id", conversationId, tcp.Seq, tcp.Ack)
 
-			ipTnsBytes[found_dbIp] += uint64(len(app.Payload()))
+			ipTnsBytes[found_dbIp] += uint64(len(app.Payload())) //zliczenie ilosci przetransferowanych pakietow TNS dla IP bazy
 			log.Println("TNS bytes sent over IP address: ", ipTnsBytes)
 
-			if strings.Contains(tcp.DstPort.String(), *dbPort) {
-				//reqTimestamp[conversationId] = packet.Metadata().Timestamp
+			if strings.Contains(tcp.DstPort.String(), *dbPort) { //Pakiet typu request
+				//Sprawdzenie czy request zawiera tresc polecenia SQL z wyrazenia regularnego
+				// i nie jest jednoczesnie przeslaniem deskryptora polaczenia
 				if mi := rSQL.FindStringIndex(string(app.Payload())); mi != nil &&
 					!strings.Contains(string(app.Payload()), "DESCRIPTION") {
 
+					//W niektorych przypadkach dlugosc zapytania jest podawana w formie malego 
+					//a w innych wielkiego indianina - jest flaga, ktora o tym mowi
 					sqlLen := 0
 					endianFlag := app.Payload()[mi[0]-5 : mi[0]-4]
 					log.Println("Endian flag is: ", endianFlag)
@@ -253,7 +259,8 @@ func main() {
 					} else if endianFlag[0] == oneByteSizeFlag {
 						sqlLen = int(sqlLenB[3])
 					}
-
+					//Ale czasem kartofelki i wuj wielki - wtedy trzeba okreslic dlugosc SQL bardziej manualnie.
+					//I to ssie - przydaloby sie znalezc na to lepsza regule
 					if sqlLen == uncertainSqlSize || sqlLen >= len(app.Payload()[mi[0]-4:]) {
 						log.Println("Can't determine sqlLen size")
 						sqlBufStart := app.Payload()[mi[0]:]
@@ -268,7 +275,7 @@ func main() {
 					} else {
 						sqlTxt = string(app.Payload()[mi[0] : mi[0]+sqlLen])
 					}
-					sqlTxtFlow[conversationId] = sqlTxt
+					sqlTxtFlow[conversationId] = sqlTxt //W tej konwersjacji ostatnio wykonanym zapytaniem jest powyzej znalezione
 
 					log.Println("SQLFlow for conversation ",
 						conversationId, sqlTxtFlow[conversationId], sqlid.Get(sqlTxt))
@@ -278,51 +285,46 @@ func main() {
 
 				} else if len(app.Payload()) > 13 && (bytes.Equal(app.Payload()[3:5], usedCursorFlag) ||
 					  bytes.Equal(app.Payload()[3:5], usedCursorFlagAfterError)) {
-
+					//Jesli w pakiecie request nie ma tresci zapytania, to znaczy ze uzywam otwartego kursora
 					log.Printf("Used: % 02x => %s, %d\n", app.Payload()[3:5], appPort, tcp.Seq)
 
+					//Na @13 jest 1B z ID slotu, na ktorym po stronie serwera jest zapamietany ten kursor
+					//klient prosi o wykonanie tego kursora ze slotu, wiec ja sobie sprytnie ten slot biere i zapmietuje
 					cursorSlot := strconv.Itoa(int(app.Payload()[13]))
+					//No i go pobieram. Zapamietanie jest na poziomie rozkminy pakietu response - 
+					//bo wtedy ony serwer to zwraca
 					sqlTxt = SQLslot[conversationId + "_" + cursorSlot]
 
 					log.Println("Called SQL text from reused cursor: ",
 							sqlTxt, appPort, tcp.Seq, tcp.Ack, conversationId + "_" + cursorSlot)
 
-					reusedCursor = 1
+					reusedCursor = 1 //Oznaczam sobie, ze to taki sprytny otwarty kursorek 
 					foundValidPacket = true
 				}
-			} else {
-				//resTimestamp[conversationId] = packet.Metadata().Timestamp
-				responsePacket = true
+			} else { //A tu juz zachodzi parsowanie pakietu response
+				responsePacket = true //mhm
 				if strings.Contains(string(app.Payload()), "ORA-01403") {
+					//Jesli pojawia sie, ze danych brak, to znaczy, ze ony pakiet ostatnim jest w pobraniu z serwera danych
 
 					sqlTxt = "SQL_END"
-					endOfDataI := bytes.Index(app.Payload(), endOfDataFlag)
+					endOfDataI := bytes.Index(app.Payload(), endOfDataFlag) //Jest flaga, na koniec danych w pakiecie endOfDataFlag(0x7b05)
 					log.Println("End Of Data Byte is: ", endOfDataI)
-					cursorSlot := strconv.Itoa(int(app.Payload()[endOfDataI+6]))
+					cursorSlot := strconv.Itoa(int(app.Payload()[endOfDataI+6])) //I @+6 jest slocik, pod ktorym Pan Serwer kurson ony zapamietal
 					log.Println("Cursor Slot is: ", cursorSlot)
 
-					/*if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
-                                                        SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
-                                                        sqlTxtFlow[conversationId] = "_"
-                                        }*/
-					SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
+					SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId] //To i ja dla tej konwersacyji tresc SQL pamietam
 					foundValidPacket = true
 
 				} else if len(app.Payload()) > 20 &&
 					  !strings.Contains(string(app.Payload()), "AUTH") &&
 					  app.Payload()[4] == tnsPacketData {
-
+					//Ale nie zawsze jest tak pieknie, ze reponse ma koniec danych, oj nie zawsze!
+					//Czasem to pakiet po DML a wtedy nic ino flagi retOpiParam albo retStatus
+					//Ale i tam numery slotow znalezn sposobna
 					if app.Payload()[10] == retOpiParam {
 						cursorSlot := strconv.Itoa(int(app.Payload()[21]))
 						log.Println("Cursor Slot in RetOpiParam is: ", cursorSlot, appPort, tcp.Seq)
 
-						/*if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
-							SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
-							log.Println("Set slot ", conversationId + "_" + cursorSlot, " to: " ,
-									sqlTxtFlow[conversationId])
-
-							sqlTxtFlow[conversationId] = "_"
-						}*/
 						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
 
@@ -331,13 +333,6 @@ func main() {
 						cursorSlot := strconv.Itoa(int(app.Payload()[28]))
                                                 log.Println("Cursor Slot in RetStatus is: ", cursorSlot, appPort, tcp.Seq)
 
-						/*if _, present := SQLslot[conversationId + "_" + cursorSlot]; !present {
-                                                        SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
-							log.Println("Set slot ", conversationId + "_" + cursorSlot, " to: " ,
-									sqlTxtFlow[conversationId])
-
-                                                        sqlTxtFlow[conversationId]= "_"
-                                                }*/
 						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
 
@@ -347,16 +342,19 @@ func main() {
 
 			if foundValidPacket {
 				if len(sqlTxt) == 0 {
-					sqlTxt = "_"
+					sqlTxt = "_" //A to taki placeholderek dla pakietow posrednich - tam gdzie tresci nie lza
 				}
+				//O a tu, to sobie ogarniamy od kiedy, do kiedy ten PCAP trwal
 				if tBegin.IsZero() {
-					tBegin = packet.Metadata().Timestamp
+					tBegin = packet.Metadata().Timestamp //No bo pierwsza date ustawiamy ino roz
 				}
-				tEnd = packet.Metadata().Timestamp
+				tEnd = packet.Metadata().Timestamp //A te ostatnio to ciungle w gore i w gore
 
-				rtt := int64(0)
+				rtt := int64(0) //To ze Round Trip Time, ze zerem inicjowany a potem liczony
+				//Ale tylko jesli pakiet jest pakietem response, od ktorego ostatni timestamp trza odjac, hej!
 				if responsePacket && len(Conversations[conversationId]) >= 1{
 					lastIdx := len(Conversations[conversationId]) - 1
+					//No to biere ostatni zarejestrowany timestamp pakietu tej konwersacji i se odejmuje
 					rtt = packet.Metadata().Timestamp.Sub(Conversations[conversationId][lastIdx].Timestamp).Nanoseconds()
 				}
 
@@ -388,43 +386,59 @@ func main() {
 		RTT := int64(0)
 		reusedCursors := uint(0)
 
+		//Dla kazdej konwersjacji jade po wszystkich jej pakietach
 		for _, p := range Conversations[c] {
-			log.Println(p.SQL_id, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, string(p.SQL[0]), "...")
-			if tPrev.IsZero() {
+			if tPrev.IsZero() { //Dla pierwszego pakietu timestamp zapamietuje
 				tPrev = p.Timestamp
-				packetDuration = p.Timestamp.Sub(tPrev)
+				packetDuration = p.Timestamp.Sub(tPrev) //Tu bedzie oczywiscie 0, ale milo to wyswietlic w logach
 			} else {
-				packetDuration = p.Timestamp.Sub(tPrev)
+				packetDuration = p.Timestamp.Sub(tPrev) //A tu sie caly czas od obecnego czasu ten pierwszy odejmuje
 			}
-			pcktCnt += 1
-			//RTT += p.RTT
+			pcktCnt += 1 //Licze pakiety sobie, licze
+
+			//No jesli to nie jest bylejaki pakiet, to ma tresc zapytania, a wtedy to poczatek jest flow
+			//To mozna ustalic kiedy sie to zaczelo i jaka tresc zapytania przyjac i sqlid itp
 			if p.SQL != "_" && p.SQL != "SQL_END" {
 				tB = p.Timestamp
 				sqlTxt = p.SQL
 				sqlId = p.SQL_id
 				reusedCursors += p.IsReused
 			} else { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
-				RTT += p.RTT
+				RTT += p.RTT //RTT to ja dodaje, zeby czas sieciowy ogarnac. 
+				//Bo pierwszy pakiet z poczatku flow pomijam calkiem - zeby nie liczyc czasu na DBTime poswieconego
 			}
-			if sqlId != "+" && (p.SQL == "SQL_END" ||
-				(len(sqlTxt) > 1 && p.SQL == "_" && sqlTxt[0] != 's' && sqlTxt[0] != 'S')) {
+			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, string(sqlTxt[0:5]), "...")
 
+			//A to wszystko znaczy, ze to koniec FLOW
+			//Bo dla SELECT to bedzie oczywiscie SQL_END jako flaga, a dla DML to juz po prostu kolejny pakiet
+			//Wiec dla ustalonego SQLID, jesli mamy znacznik konca, lub tresc zapytania jest ustalona we flow
+			//i jest to kolejny pakiet po prostu, ale tresc zapytania to nie SELECT lub WITH 
+			//bo w tych flow jest dlugi i musze miec znacznik konca (SQL_END) to wtedy ogarniaj statystyki
+			if sqlId != "+" && (p.SQL == "SQL_END" || (len(sqlTxt) > 1 && p.SQL == "_" && strings.ToUpper(sqlTxt)[0] != 'S' && strings.ToUpper(sqlTxt)[0] != 'W')) {
 				tE = p.Timestamp
 				//sqlDuration = tE.Sub(tB)
 				sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
 				log.Println("\tsummary: ", sqlDuration.Nanoseconds(), tE.Sub(tB).Nanoseconds(), tB, tE, RTT, sqlId)
 
+				//Jesli mapa statystyk nie jest zainicjowana dla tego sqlid to trzeba ja zainicjowac najpierw
+				//no zerami oczywiscie na start
 				if _, ok := SQLIdStats[sqlId]; !ok {
 					SQLIdStats[sqlId] = &SQLstats{SQLtxt: "",
 						Elapsed_ms_sum: 0, Executions: 0, Packets: 0,
 						Sessions: make(map[string]uint), ReusedCursors: 0,
 						Elapsed_ms_app: 0}
 				}
+
+				//Bo tu dopiero uzupelniam statsy, jesli RTT policzone zostalo - znaczy jesli zliczanie przebieglo dobrze
 				if RTT >= 0 { // Checking if RTT is calculated properly
 					SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt, reusedCursors, sqlDuration.Nanoseconds())
 				} else {
-					log.Println(RTT, sqlTxt, c, sqlId)
+					//Jesli nie, to glosno o tym krzycze
+					log.Println("Something went wrong with counting, casuse rtt is mniej niz zero!", RTT, sqlTxt, c, sqlId)
 				}
+				//No i na koniec takiego podliczenia statsow to to wszystko sobie ladnie zeruje. 
+				//To dzialac ma prawo tylko, jesli pakiety sa w dobrej kolejnosci,
+				//jesli natomiast by SEQ i ACK kompletnie sie nie zgadzaly w kolejnosci to dupa
 				sqlTxt = "+"
 				sqlId = "+"
 				pcktCnt = 0
