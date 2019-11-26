@@ -407,7 +407,11 @@ func main() {
 				RTT += p.RTT //RTT to ja dodaje, zeby czas sieciowy ogarnac. 
 				//Bo pierwszy pakiet z poczatku flow pomijam calkiem - zeby nie liczyc czasu na DBTime poswieconego
 			}
-			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, string(sqlTxt[0:5]), "...")
+			shortSQL := string(sqlTxt[0])
+			if len(sqlTxt) > 5 {
+				shortSQL = string(sqlTxt[0:5])
+			}
+			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, shortSQL, "...")
 
 			//A to wszystko znaczy, ze to koniec FLOW
 			//Bo dla SELECT to bedzie oczywiscie SQL_END jako flaga, a dla DML to juz po prostu kolejny pakiet
