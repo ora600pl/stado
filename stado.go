@@ -403,9 +403,10 @@ func main() {
 				sqlTxt = p.SQL
 				sqlId = p.SQL_id
 				reusedCursors += p.IsReused
-			} else { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
+			} else if sqlId != "+" { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
 				RTT += p.RTT //RTT to ja dodaje, zeby czas sieciowy ogarnac. 
 				//Bo pierwszy pakiet z poczatku flow pomijam calkiem - zeby nie liczyc czasu na DBTime poswieconego
+				//No i pominac trzeba wszelkie niezdefiniowane sqlid, bo to sa pakiety nieobslugiwane
 			}
 			shortSQL := string(sqlTxt[0])
 			if len(sqlTxt) > 5 {
