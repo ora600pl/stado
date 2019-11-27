@@ -333,7 +333,7 @@ func main() {
 				}
 			} else { //A tu juz zachodzi parsowanie pakietu response
 				responsePacket = true //mhm
-				if strings.Contains(string(app.Payload()), "ORA-01403") || (len(app.Payload()) > 10 && app.Payload()[4] == tnsPacketData && app.Payload()[10] == retOpiParam) {
+				if strings.Contains(string(app.Payload()), "ORA-01403") {
 					//Jesli pojawia sie, ze danych brak, to znaczy, ze ony pakiet ostatnim jest w pobraniu z serwera danych
 
 					sqlTxt = "SQL_END"
@@ -357,6 +357,7 @@ func main() {
 
 						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
+						sqlTxt = "SQL_END"
 
 					} else if app.Payload()[10] == retStatus {
 
@@ -365,6 +366,7 @@ func main() {
 
 						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
+						sqlTxt = "SQL_END"
 
 					}
 				}
@@ -444,7 +446,7 @@ func main() {
 			if len(sqlTxt) > 5 {
 				shortSQL = string(sqlTxt[0:5])
 			}
-			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, packetDuration, p.Timestamp, shortSQL, "...", c)
+			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, shortSQL, "...", c)
 
 			//A to wszystko znaczy, ze to koniec FLOW
 			//Bo dla SELECT to bedzie oczywiscie SQL_END jako flaga, a dla DML to juz po prostu kolejny pakiet
@@ -455,7 +457,7 @@ func main() {
 				tE = p.Timestamp
 				sqlDuration = tE.Sub(tB)
 				//sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
-				log.Println("\tsummary: ", sqlDuration.Nanoseconds(), tE.Sub(tB).Nanoseconds(), tB, tE, RTT, sqlId)
+				log.Println("\tsummary: ", sqlDuration.Nanoseconds(), RTT, tB, tE, sqlId)
 
 				//Jesli mapa statystyk nie jest zainicjowana dla tego sqlid to trzeba ja zainicjowac najpierw
 				//no zerami oczywiscie na start
@@ -471,7 +473,7 @@ func main() {
 					SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt+1, reusedCursors, sqlDuration.Nanoseconds(), sqlId)
 				} else {
 					//Jesli nie, to glosno o tym krzycze
-					log.Println("Something went wrong with counting, casuse rtt is mniej niz zero!", RTT, sqlTxt, c, sqlId)
+					log.Println("Something went wrong with counting, casuse rtt is mniej niz zero!", RTT, sqlTxt, c, sqlId, packetDuration)
 				}
 				//No i na koniec takiego podliczenia statsow to to wszystko sobie ladnie zeruje. 
 				//To dzialac ma prawo tylko, jesli pakiety sa w dobrej kolejnosci,
