@@ -35,6 +35,7 @@ import (
 	"time"
 	"bytes"
 	"strconv"
+	"sort"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -88,9 +89,10 @@ type SQLstats struct {
 	ReusedCursors  uint
 	Elapsed_ms_app float64 //Wallclock from the whole app perspective
 	Ela_ms_app_all []float64 //Elapsed time from app perspective
+	SQLid	       string
 }
 
-func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet_cnt uint, reusedCursors uint, sqlApp int64) {
+func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet_cnt uint, reusedCursors uint, sqlApp int64, sqlid string) {
 	s.SQLtxt = sqlTxt
 	s.Elapsed_ms_all = append(s.Elapsed_ms_all, float64(sqlDuration)/1000000)
 	s.Elapsed_ms_sum += float64(sqlDuration) / 1000000
@@ -100,9 +102,38 @@ func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet
 	s.ReusedCursors += reusedCursors
 	s.Elapsed_ms_app += float64(sqlApp) / 1000000
 	s.Ela_ms_app_all = append(s.Ela_ms_app_all, float64(sqlApp)/1000000)
+	s.SQLid=sqlid
 }
 
 var SQLIdStats map[string]*SQLstats
+
+type SQLstatsSbEla []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed time from app perspective
+func (a SQLstatsSbEla) Len() int           { return len(a) }
+func (a SQLstatsSbEla) Less(i, j int) bool { return a[i].Elapsed_ms_app<a[j].Elapsed_ms_app }
+func (a SQLstatsSbEla) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+
+type SQLstatsSbElaEx []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed Time Net / Execution 
+func (a SQLstatsSbElaEx) Len() int           { return len(a) }
+func (a SQLstatsSbElaEx) Less(i, j int) bool { return a[i].Elapsed_ms_app / float64(a[i].Executions) < a[j].Elapsed_ms_app / float64(a[j].Executions) }
+func (a SQLstatsSbElaEx) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+type SQLstatsSbPckt []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed time
+func (a SQLstatsSbPckt) Len() int           { return len(a) }
+func (a SQLstatsSbPckt) Less(i, j int) bool { return a[i].Packets<a[j].Packets }
+func (a SQLstatsSbPckt) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+type SQLstatsSbRTT []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed time from net perspective
+func (a SQLstatsSbRTT) Len() int           { return len(a) }
+func (a SQLstatsSbRTT) Less(i, j int) bool { return a[i].Elapsed_ms_sum<a[j].Elapsed_ms_sum }
+func (a SQLstatsSbRTT) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+type SQLstatsSbRTTEx []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed Time Net / Execution
+func (a SQLstatsSbRTTEx) Len() int           { return len(a) }
+func (a SQLstatsSbRTTEx) Less(i, j int) bool { return a[i].Elapsed_ms_sum / float64(a[i].Executions) < a[j].Elapsed_ms_sum / float64(a[j].Executions) }
+func (a SQLstatsSbRTTEx) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+
 
 func banner() {
 	fmt.Println("STADO (SQL Tracedump Analyzer Doing Oracle) by Radoslaw Kut and Kamil Stawiarski")
@@ -115,6 +146,7 @@ func main() {
 	dbPort := flag.String("p", "", "Listener port for database server")
 	debug := flag.Int("d", 0, "Debug flag")
 	chartsDir := flag.String("C", "", "<dir> directory path to write SQL Charts i.e. -C DevApp")
+	sortBy := flag.String("s", "ela", "Sort by: ela (Elapsed Time), elax (Elapsed time / Executions), pckt (Packets), rtt (Network Elapsed Time), rttx (Elapsed Time Net / Exec)")
 
 	flag.Parse()
 
@@ -153,8 +185,6 @@ func main() {
 	SQLIdStats = make(map[string]*SQLstats)
 
 	SQLslot := make(map[string]string)
-	//reqTimestamp := make(map[string] time.Time)
-	//resTimestamp := make(map[string] time.Time)
 	ipTnsBytes := make(map[string] uint64)
 
 	handle, err := pcap.OpenOffline(*pcapFile)
@@ -303,7 +333,7 @@ func main() {
 				}
 			} else { //A tu juz zachodzi parsowanie pakietu response
 				responsePacket = true //mhm
-				if strings.Contains(string(app.Payload()), "ORA-01403") {
+				if strings.Contains(string(app.Payload()), "ORA-01403") || (len(app.Payload()) > 10 && app.Payload()[4] == tnsPacketData && app.Payload()[10] == retOpiParam) {
 					//Jesli pojawia sie, ze danych brak, to znaczy, ze ony pakiet ostatnim jest w pobraniu z serwera danych
 
 					sqlTxt = "SQL_END"
@@ -375,6 +405,7 @@ func main() {
 		}
 	}
 
+	log.Println("Starting to build statistics")
 	for c := range Conversations {
 		log.Println(c)
 		//sort.Sort(SQLtcpSort(Conversations[c]))
@@ -388,13 +419,13 @@ func main() {
 
 		//Dla kazdej konwersjacji jade po wszystkich jej pakietach
 		for _, p := range Conversations[c] {
-			if tPrev.IsZero() { //Dla pierwszego pakietu timestamp zapamietuje
+			if tPrev.IsZero() && sqlId != "+"{ //Dla pierwszego pakietu timestamp zapamietuje
 				tPrev = p.Timestamp
-				packetDuration = p.Timestamp.Sub(tPrev) //Tu bedzie oczywiscie 0, ale milo to wyswietlic w logach
-			} else {
-				packetDuration = p.Timestamp.Sub(tPrev) //A tu sie caly czas od obecnego czasu ten pierwszy odejmuje
 			}
-			pcktCnt += 1 //Licze pakiety sobie, licze
+			if sqlId != "+" {
+				packetDuration = p.Timestamp.Sub(tPrev) //A tu sie caly czas od obecnego czasu ten pierwszy odejmuje
+				pcktCnt += 1
+			}
 
 			//No jesli to nie jest bylejaki pakiet, to ma tresc zapytania, a wtedy to poczatek jest flow
 			//To mozna ustalic kiedy sie to zaczelo i jaka tresc zapytania przyjac i sqlid itp
@@ -403,16 +434,17 @@ func main() {
 				sqlTxt = p.SQL
 				sqlId = p.SQL_id
 				reusedCursors += p.IsReused
-			} else if sqlId != "+" { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
+			} else if sqlId != "+" && pcktCnt > 1 { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
 				RTT += p.RTT //RTT to ja dodaje, zeby czas sieciowy ogarnac. 
 				//Bo pierwszy pakiet z poczatku flow pomijam calkiem - zeby nie liczyc czasu na DBTime poswieconego
 				//No i pominac trzeba wszelkie niezdefiniowane sqlid, bo to sa pakiety nieobslugiwane
 			}
+
 			shortSQL := string(sqlTxt[0])
 			if len(sqlTxt) > 5 {
 				shortSQL = string(sqlTxt[0:5])
 			}
-			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, shortSQL, "...")
+			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, packetDuration, p.Timestamp, shortSQL, "...", c)
 
 			//A to wszystko znaczy, ze to koniec FLOW
 			//Bo dla SELECT to bedzie oczywiscie SQL_END jako flaga, a dla DML to juz po prostu kolejny pakiet
@@ -421,8 +453,8 @@ func main() {
 			//bo w tych flow jest dlugi i musze miec znacznik konca (SQL_END) to wtedy ogarniaj statystyki
 			if sqlId != "+" && (p.SQL == "SQL_END" || (len(sqlTxt) > 1 && p.SQL == "_" && strings.ToUpper(sqlTxt)[0] != 'S' && strings.ToUpper(sqlTxt)[0] != 'W')) {
 				tE = p.Timestamp
-				//sqlDuration = tE.Sub(tB)
-				sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
+				sqlDuration = tE.Sub(tB)
+				//sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
 				log.Println("\tsummary: ", sqlDuration.Nanoseconds(), tE.Sub(tB).Nanoseconds(), tB, tE, RTT, sqlId)
 
 				//Jesli mapa statystyk nie jest zainicjowana dla tego sqlid to trzeba ja zainicjowac najpierw
@@ -436,7 +468,7 @@ func main() {
 
 				//Bo tu dopiero uzupelniam statsy, jesli RTT policzone zostalo - znaczy jesli zliczanie przebieglo dobrze
 				if RTT >= 0 { // Checking if RTT is calculated properly
-					SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt, reusedCursors, sqlDuration.Nanoseconds())
+					SQLIdStats[sqlId].Fill(sqlTxt, RTT, c, pcktCnt+1, reusedCursors, sqlDuration.Nanoseconds(), sqlId)
 				} else {
 					//Jesli nie, to glosno o tym krzycze
 					log.Println("Something went wrong with counting, casuse rtt is mniej niz zero!", RTT, sqlTxt, c, sqlId)
@@ -455,37 +487,63 @@ func main() {
 			}
 		}
 	}
+
+	log.Println("Starting to sort aggregated stats")
+
+	//Zeby posortowac, trzeba przepisac mape zagregowanych statystyk do zwyklej kolekcji
+	var sortedStats []SQLstats
+	for _, v := range SQLIdStats {
+		sortedStats = append(sortedStats, *v)
+	}
+
+	//Korzystamy z interfejsu pakietu sort do posortowania wynikow w odpowiedni sposob
+	if *sortBy == "ela" {
+		sort.Sort(SQLstatsSbEla(sortedStats))
+	} else if *sortBy == "elax" {
+		sort.Sort(SQLstatsSbElaEx(sortedStats))
+	} else if *sortBy == "pckt" {
+		sort.Sort(SQLstatsSbPckt(sortedStats))
+	} else if *sortBy == "rtt" {
+                sort.Sort(SQLstatsSbRTT(sortedStats))
+        } else if *sortBy == "rttx" {
+                sort.Sort(SQLstatsSbRTTEx(sortedStats))
+        }
+
+
+
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
 	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
 	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
 	var graphVal []chart.Value
 	var sumApp, sumNet float64
-	for sqlid := range SQLIdStats {
-		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid,
-			SQLIdStats[sqlid].Elapsed_ms_app,
-			SQLIdStats[sqlid].Elapsed_ms_sum,
-			SQLIdStats[sqlid].Executions,
-			StdDev(SQLIdStats[sqlid].Ela_ms_app_all),
-			SQLIdStats[sqlid].Elapsed_ms_app/float64(SQLIdStats[sqlid].Executions),
-			StdDev(SQLIdStats[sqlid].Elapsed_ms_all),
-			SQLIdStats[sqlid].Elapsed_ms_sum/float64(SQLIdStats[sqlid].Executions),
-			SQLIdStats[sqlid].Packets,
-			len(SQLIdStats[sqlid].Sessions),
-			SQLIdStats[sqlid].ReusedCursors)
+	sqlCnt := 0
+	for _, sqlid := range sortedStats {
+		sqlCnt += 1
+		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid.SQLid,
+			sqlid.Elapsed_ms_app,
+			sqlid.Elapsed_ms_sum,
+			sqlid.Executions,
+			StdDev(sqlid.Ela_ms_app_all),
+			sqlid.Elapsed_ms_app/float64(sqlid.Executions),
+			StdDev(sqlid.Elapsed_ms_all),
+			sqlid.Elapsed_ms_sum/float64(sqlid.Executions),
+			sqlid.Packets,
+			len(sqlid.Sessions),
+			sqlid.ReusedCursors)
 
-		sumApp += SQLIdStats[sqlid].Elapsed_ms_app
-		sumNet += SQLIdStats[sqlid].Elapsed_ms_sum
+		sumApp += sqlid.Elapsed_ms_app
+		sumNet += sqlid.Elapsed_ms_sum
 
 		graphVal = append(graphVal, chart.Value{Value:
-				SQLIdStats[sqlid].Elapsed_ms_sum /
-						float64(SQLIdStats[sqlid].Executions), Label: sqlid})
+				sqlid.Elapsed_ms_sum /
+						float64(sqlid.Executions), Label: sqlid.SQLid})
 
 		var execs []float64
-		for exec := 0; exec < int(SQLIdStats[sqlid].Executions); exec++ {
+		for exec := 0; exec < int(sqlid.Executions); exec++ {
 			execs = append(execs, float64(exec))
 		}
 		SQLgraph := chart.Chart{
-			Title: sqlid + " elapsed time per execution (ms)",
+			Title: sqlid.SQLid + " elapsed time per execution (ms)",
 			Background: chart.Style{
 				Padding: chart.Box{
 					Top:    40,
@@ -499,12 +557,12 @@ func main() {
 						FillColor:   drawing.ColorRed.WithAlpha(64), // will supercede defaults
 					},
 					XValues: execs,
-					YValues: SQLIdStats[sqlid].Elapsed_ms_all,
+					YValues: sqlid.Elapsed_ms_all,
 				},
 			},
 		}
 
-		f, err := os.Create(*chartsDir + "/" + sqlid + ".png")
+		f, err := os.Create(*chartsDir + "/" + sqlid.SQLid + ".png")
 		if err != nil {
 			log.Println(err)
 		}
@@ -514,6 +572,7 @@ func main() {
 
 	fmt.Println("\nSum App Time(s):", sumApp/1000)
 	fmt.Println("Sum Net Time(s):", sumNet/1000, "\n")
+	fmt.Println("No. SQLs:", sqlCnt, "\n")
 
 	for ip := range(ipTnsBytes) {
 		fmt.Println(ip, ipTnsBytes[ip]/1024, "kb")
