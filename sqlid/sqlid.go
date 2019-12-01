@@ -23,6 +23,9 @@ func toFixed(num float64, precision int) float64 {
 
 //Get reutrns SQLid string for provided SQL Text
 func Get(sql string) string {
+	if sql == "PLSQL_CALL" {
+		return "   PLSQL_CALL"
+	}
 	sql = strings.Trim(sql, "\x00") + "\x00"
 	md5 := getMD5Hash(sql) /* get md5 hash */
 	low16 := md5[16:]      /* we only need lower 16 */

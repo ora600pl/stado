@@ -204,7 +204,7 @@ func main() {
 	log.Println("Created BPF Filter", filter)
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
-	rSQL := regexp.MustCompile("(?i)SELECT|update|insert|with|delete|commit|alter")
+	rSQL := regexp.MustCompile("(?i)SELECT|update|insert|with|delete|commit|alter|PLSQL_call")
 	log.Println("Created regular expression for SQLs")
 
 	var appPort, appIp, sqlTxt, found_dbIp, found_dbPort string
@@ -219,6 +219,8 @@ func main() {
 	retOpiParam := byte(8) //TNS Header at @10
 	retStatus := byte(4) //TNS Header at @10
 	tnsPacketData := byte(6) //TNS Header at@4
+	plSQLCall := byte(76) //PL/SQL call 4C at @11
+	cursorCloseAll := byte(105) //0x69 @11
 
 	sqlTxtFlow := make(map[string] string) //mapa wykonanych polecen sql w danej konwersacji z przypisaniem do slotu otwartego kursora
 
@@ -330,6 +332,11 @@ func main() {
 
 					reusedCursor = 1 //Oznaczam sobie, ze to taki sprytny otwarty kursorek 
 					foundValidPacket = true
+				} else if len(app.Payload()) > 34 && (app.Payload()[11] == plSQLCall ||
+						(app.Payload()[11] == cursorCloseAll && app.Payload()[34] == plSQLCall)){
+					log.Println("This is a PL/SQL Call")
+					sqlTxt = "PLSQL_CALL"
+					foundValidPacket = true
 				}
 			} else { //A tu juz zachodzi parsowanie pakietu response
 				responsePacket = true //mhm
@@ -415,12 +422,16 @@ func main() {
 		var sqlDuration, packetDuration time.Duration
 		sqlTxt := "+"
 		sqlId := "+"
+		newSqlId := false //sie zdarzyc moze, ze nowy sql id pojawi sie bez konca poprzedniego
 		pcktCnt := uint(0)
 		RTT := int64(0)
 		reusedCursors := uint(0)
-
+		conversationLen := len(Conversations[c])
 		//Dla kazdej konwersjacji jade po wszystkich jej pakietach
-		for _, p := range Conversations[c] {
+		for idx, p := range Conversations[c] {
+			if sqlId != "+" && idx < conversationLen-2 && Conversations[c][idx+1].SQL_id != sqlId && Conversations[c][idx+1].SQL != "_" {
+				newSqlId = true
+			}
 			if tPrev.IsZero() && sqlId != "+"{ //Dla pierwszego pakietu timestamp zapamietuje
 				tPrev = p.Timestamp
 			}
@@ -431,7 +442,7 @@ func main() {
 
 			//No jesli to nie jest bylejaki pakiet, to ma tresc zapytania, a wtedy to poczatek jest flow
 			//To mozna ustalic kiedy sie to zaczelo i jaka tresc zapytania przyjac i sqlid itp
-			if p.SQL != "_" && p.SQL != "SQL_END" {
+			if mi := rSQL.FindStringIndex(p.SQL); mi != nil  && tB.IsZero() { //p.SQL != "_" && p.SQL != "SQL_END" {
 				tB = p.Timestamp
 				sqlTxt = p.SQL
 				sqlId = p.SQL_id
@@ -446,14 +457,15 @@ func main() {
 			if len(sqlTxt) > 5 {
 				shortSQL = string(sqlTxt[0:5])
 			}
-			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, p.Timestamp, shortSQL, "...", c)
+			log.Println(sqlId, p.Seq, p.Ack, p.RTT, RTT, pcktCnt, p.Timestamp, shortSQL, "...", c)
 
 			//A to wszystko znaczy, ze to koniec FLOW
 			//Bo dla SELECT to bedzie oczywiscie SQL_END jako flaga, a dla DML to juz po prostu kolejny pakiet
 			//Wiec dla ustalonego SQLID, jesli mamy znacznik konca, lub tresc zapytania jest ustalona we flow
 			//i jest to kolejny pakiet po prostu, ale tresc zapytania to nie SELECT lub WITH 
 			//bo w tych flow jest dlugi i musze miec znacznik konca (SQL_END) to wtedy ogarniaj statystyki
-			if sqlId != "+" && (p.SQL == "SQL_END" || (len(sqlTxt) > 1 && p.SQL == "_" && strings.ToUpper(sqlTxt)[0] != 'S' && strings.ToUpper(sqlTxt)[0] != 'W')) {
+			if sqlId != "+" && (p.SQL == "SQL_END" || newSqlId ||
+						(len(sqlTxt) > 1 && p.SQL == "_" && strings.ToUpper(sqlTxt)[0] != 'S' && strings.ToUpper(sqlTxt)[0] != 'W')) {
 				tE = p.Timestamp
 				sqlDuration = tE.Sub(tB)
 				//sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
@@ -486,6 +498,7 @@ func main() {
 				tB = time.Time{}
 				tE = time.Time{}
 				reusedCursors = 0
+				newSqlId = false
 			}
 		}
 	}
