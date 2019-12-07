@@ -528,7 +528,8 @@ func main() {
 
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
 	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
-	fmt.Println("--------------------------------------------------------------------------------------------------------------------------------------------------\n")
+	sep := strings.Repeat("-", 146)
+        fmt.Println(sep)
 	var graphVal []chart.Value
 	var sumApp, sumNet float64
 	sqlCnt := 0
