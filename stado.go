@@ -140,6 +140,125 @@ func banner() {
 	fmt.Println("Pcap file analyzer for finding TOP SQLs from an APP perspective")
 }
 
+func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *string, ipTnsBytes map[string] uint64) {
+	log.Println("Starting to sort aggregated stats")
+
+	//Zeby posortowac, trzeba przepisac mape zagregowanych statystyk do zwyklej kolekcji
+	var sortedStats []SQLstats
+	for _, v := range SQLIdStats {
+		sortedStats = append(sortedStats, *v)
+	}
+
+	//Korzystamy z interfejsu pakietu sort do posortowania wynikow w odpowiedni sposob
+	if *sortBy == "ela" {
+		sort.Sort(SQLstatsSbEla(sortedStats))
+	} else if *sortBy == "elax" {
+		sort.Sort(SQLstatsSbElaEx(sortedStats))
+	} else if *sortBy == "pckt" {
+		sort.Sort(SQLstatsSbPckt(sortedStats))
+	} else if *sortBy == "rtt" {
+                sort.Sort(SQLstatsSbRTT(sortedStats))
+        } else if *sortBy == "rttx" {
+                sort.Sort(SQLstatsSbRTTEx(sortedStats))
+        }
+
+
+
+	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
+	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
+	sep := strings.Repeat("-", 146)
+        fmt.Println(sep)
+	var graphVal []chart.Value
+	var sumApp, sumNet float64
+	sqlCnt := 0
+	for _, sqlid := range sortedStats {
+		sqlCnt += 1
+		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid.SQLid,
+			sqlid.Elapsed_ms_app,
+			sqlid.Elapsed_ms_sum,
+			sqlid.Executions,
+			StdDev(sqlid.Ela_ms_app_all),
+			sqlid.Elapsed_ms_app/float64(sqlid.Executions),
+			StdDev(sqlid.Elapsed_ms_all),
+			sqlid.Elapsed_ms_sum/float64(sqlid.Executions),
+			sqlid.Packets,
+			len(sqlid.Sessions),
+			sqlid.ReusedCursors)
+
+		sumApp += sqlid.Elapsed_ms_app
+		sumNet += sqlid.Elapsed_ms_sum
+
+		graphVal = append(graphVal, chart.Value{Value:
+				sqlid.Elapsed_ms_sum /
+						float64(sqlid.Executions), Label: sqlid.SQLid})
+
+		var execs []float64
+		for exec := 0; exec < int(sqlid.Executions); exec++ {
+			execs = append(execs, float64(exec))
+		}
+		SQLgraph := chart.Chart{
+			Title: sqlid.SQLid + " elapsed time per execution (ms)",
+			Background: chart.Style{
+				Padding: chart.Box{
+					Top:    40,
+					Bottom: 10,
+				},
+			},
+			Series: []chart.Series{
+				chart.ContinuousSeries{
+					Style: chart.Style{
+						StrokeColor: drawing.ColorRed,               // will supercede defaults
+						FillColor:   drawing.ColorRed.WithAlpha(64), // will supercede defaults
+					},
+					XValues: execs,
+					YValues: sqlid.Elapsed_ms_all,
+				},
+			},
+		}
+
+		f, err := os.Create(*chartsDir + "/" + sqlid.SQLid + ".png")
+		if err != nil {
+			log.Println(err)
+		}
+		SQLgraph.Render(chart.PNG, f)
+		f.Close()
+	}
+
+	fmt.Println("\nSum App Time(s):", sumApp/1000)
+	fmt.Println("Sum Net Time(s):", sumNet/1000, "\n")
+	fmt.Println("No. SQLs:", sqlCnt, "\n")
+
+	for ip := range(ipTnsBytes) {
+		fmt.Println(ip, ipTnsBytes[ip]/1024, "kb")
+	}
+
+	fmt.Println("\n\n\tTime frame: ", tBegin, " <=> ", tEnd)
+	fmt.Println("\tTime frame duration (s): ", tEnd.Sub(tBegin).Seconds(), "\n")
+
+	graph := chart.BarChart{
+		Title: "SQLid Elapsed Time Summary (ms)",
+		Background: chart.Style{
+			Padding: chart.Box{
+				Top:    100,
+				Bottom: 70,
+			},
+		},
+		Height:   1024,
+		Width:    2000,
+		BarWidth: 7,
+		XAxis:    chart.Style{TextRotationDegrees: 90.0},
+		Bars:     graphVal, //[]chart.Value of Value: Label:
+	}
+
+	f, err := os.Create(*chartsDir + "/" + "_sql_ela_exec.png")
+	if err != nil {
+		log.Println(err)
+	}
+	graph.Render(chart.PNG, f)
+	f.Close()
+
+}
+
 func main() {
 	pcapFile := flag.String("f", "", "path to PCAP file for analyzing")
 	dbIP := flag.String("i", "", "IP address of database server")
@@ -503,120 +622,6 @@ func main() {
 		}
 	}
 
-	log.Println("Starting to sort aggregated stats")
-
-	//Zeby posortowac, trzeba przepisac mape zagregowanych statystyk do zwyklej kolekcji
-	var sortedStats []SQLstats
-	for _, v := range SQLIdStats {
-		sortedStats = append(sortedStats, *v)
-	}
-
-	//Korzystamy z interfejsu pakietu sort do posortowania wynikow w odpowiedni sposob
-	if *sortBy == "ela" {
-		sort.Sort(SQLstatsSbEla(sortedStats))
-	} else if *sortBy == "elax" {
-		sort.Sort(SQLstatsSbElaEx(sortedStats))
-	} else if *sortBy == "pckt" {
-		sort.Sort(SQLstatsSbPckt(sortedStats))
-	} else if *sortBy == "rtt" {
-                sort.Sort(SQLstatsSbRTT(sortedStats))
-        } else if *sortBy == "rttx" {
-                sort.Sort(SQLstatsSbRTTEx(sortedStats))
-        }
-
-
-
-	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
-	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
-	sep := strings.Repeat("-", 146)
-        fmt.Println(sep)
-	var graphVal []chart.Value
-	var sumApp, sumNet float64
-	sqlCnt := 0
-	for _, sqlid := range sortedStats {
-		sqlCnt += 1
-		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid.SQLid,
-			sqlid.Elapsed_ms_app,
-			sqlid.Elapsed_ms_sum,
-			sqlid.Executions,
-			StdDev(sqlid.Ela_ms_app_all),
-			sqlid.Elapsed_ms_app/float64(sqlid.Executions),
-			StdDev(sqlid.Elapsed_ms_all),
-			sqlid.Elapsed_ms_sum/float64(sqlid.Executions),
-			sqlid.Packets,
-			len(sqlid.Sessions),
-			sqlid.ReusedCursors)
-
-		sumApp += sqlid.Elapsed_ms_app
-		sumNet += sqlid.Elapsed_ms_sum
-
-		graphVal = append(graphVal, chart.Value{Value:
-				sqlid.Elapsed_ms_sum /
-						float64(sqlid.Executions), Label: sqlid.SQLid})
-
-		var execs []float64
-		for exec := 0; exec < int(sqlid.Executions); exec++ {
-			execs = append(execs, float64(exec))
-		}
-		SQLgraph := chart.Chart{
-			Title: sqlid.SQLid + " elapsed time per execution (ms)",
-			Background: chart.Style{
-				Padding: chart.Box{
-					Top:    40,
-					Bottom: 10,
-				},
-			},
-			Series: []chart.Series{
-				chart.ContinuousSeries{
-					Style: chart.Style{
-						StrokeColor: drawing.ColorRed,               // will supercede defaults
-						FillColor:   drawing.ColorRed.WithAlpha(64), // will supercede defaults
-					},
-					XValues: execs,
-					YValues: sqlid.Elapsed_ms_all,
-				},
-			},
-		}
-
-		f, err := os.Create(*chartsDir + "/" + sqlid.SQLid + ".png")
-		if err != nil {
-			log.Println(err)
-		}
-		SQLgraph.Render(chart.PNG, f)
-		f.Close()
-	}
-
-	fmt.Println("\nSum App Time(s):", sumApp/1000)
-	fmt.Println("Sum Net Time(s):", sumNet/1000, "\n")
-	fmt.Println("No. SQLs:", sqlCnt, "\n")
-
-	for ip := range(ipTnsBytes) {
-		fmt.Println(ip, ipTnsBytes[ip]/1024, "kb")
-	}
-
-	fmt.Println("\n\n\tTime frame: ", tBegin, " <=> ", tEnd)
-	fmt.Println("\tTime frame duration (s): ", tEnd.Sub(tBegin).Seconds(), "\n")
-
-	graph := chart.BarChart{
-		Title: "SQLid Elapsed Time Summary (ms)",
-		Background: chart.Style{
-			Padding: chart.Box{
-				Top:    100,
-				Bottom: 70,
-			},
-		},
-		Height:   1024,
-		Width:    2000,
-		BarWidth: 7,
-		XAxis:    chart.Style{TextRotationDegrees: 90.0},
-		Bars:     graphVal, //[]chart.Value of Value: Label:
-	}
-
-	f, err := os.Create(*chartsDir + "/" + "_sql_ela_exec.png")
-	if err != nil {
-		log.Println(err)
-	}
-	graph.Render(chart.PNG, f)
-	f.Close()
+	showStats(tBegin, tEnd, sortBy, chartsDir, ipTnsBytes)
 
 }
