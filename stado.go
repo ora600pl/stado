@@ -94,7 +94,7 @@ type SQLstats struct {
 
 func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet_cnt uint, reusedCursors uint, sqlApp int64, sqlid string) {
 	s.SQLtxt = sqlTxt
-	s.Elapsed_ms_all = append(s.Elapsed_ms_all, float64(sqlDuration)/1000000)
+	s.Elapsed_ms_all = append(s.Elapsed_ms_all, float64(sqlDuration)/1000000) //This is for net time duration
 	s.Elapsed_ms_sum += float64(sqlDuration) / 1000000
 	s.Executions += 1
 	s.Packets += packet_cnt
@@ -133,6 +133,11 @@ func (a SQLstatsSbRTTEx) Len() int           { return len(a) }
 func (a SQLstatsSbRTTEx) Less(i, j int) bool { return a[i].Elapsed_ms_sum / float64(a[i].Executions) < a[j].Elapsed_ms_sum / float64(a[j].Executions) }
 func (a SQLstatsSbRTTEx) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
+type SQLstatsSbRat []SQLstats //SQL stats aggregated array for sorting - Sort by Ratio Ela Net / Ela App
+func (a SQLstatsSbRat) Len() int           { return len(a) }
+func (a SQLstatsSbRat) Less(i, j int) bool { return a[i].Elapsed_ms_sum / float64(a[i].Elapsed_ms_app) < a[j].Elapsed_ms_sum / float64(a[j].Elapsed_ms_app) }
+func (a SQLstatsSbRat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
 
 
 func banner() {
@@ -160,20 +165,23 @@ func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *stri
                 sort.Sort(SQLstatsSbRTT(sortedStats))
         } else if *sortBy == "rttx" {
                 sort.Sort(SQLstatsSbRTTEx(sortedStats))
-        }
+        }  else if *sortBy == "rat" {
+                sort.Sort(SQLstatsSbRat(sortedStats))
+	}
 
 
 
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
-	fmt.Println("SQL ID\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
-	sep := strings.Repeat("-", 146)
+	fmt.Println("SQL ID\t\tRatio\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
+	sep := strings.Repeat("-", 156)
         fmt.Println(sep)
 	var graphVal []chart.Value
 	var sumApp, sumNet float64
 	sqlCnt := 0
 	for _, sqlid := range sortedStats {
 		sqlCnt += 1
-		fmt.Printf("%s\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid.SQLid,
+		fmt.Printf("%s\t%f\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid.SQLid,
+			sqlid.Elapsed_ms_sum / sqlid.Elapsed_ms_app,
 			sqlid.Elapsed_ms_app,
 			sqlid.Elapsed_ms_sum,
 			sqlid.Executions,
@@ -265,7 +273,7 @@ func main() {
 	dbPort := flag.String("p", "", "Listener port for database server")
 	debug := flag.Int("d", 0, "Debug flag")
 	chartsDir := flag.String("C", "", "<dir> directory path to write SQL Charts i.e. -C DevApp")
-	sortBy := flag.String("s", "ela", "Sort by: ela (Elapsed Time), elax (Elapsed time / Executions), pckt (Packets), rtt (Network Elapsed Time), rttx (Elapsed Time Net / Exec)")
+	sortBy := flag.String("s", "ela", "Sort by: ela (Elapsed Time), elax (Elapsed time / Executions), pckt (Packets), rtt (Network Elapsed Time), rttx (Elapsed Time Net / Exec), rat (Ela Net / Ela App)")
 
 	flag.Parse()
 
