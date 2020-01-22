@@ -1,4 +1,4 @@
-# SQL Tracefile Analyzer Designed for Oracle (STADO)
+# SQL TCPDump Analyzer Designed for Oracle (STADO)
 
 ## To use stado:
 
