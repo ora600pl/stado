@@ -424,7 +424,7 @@ func main() {
 						sqlBufStart := app.Payload()[mi[0]:]
 						sqlTxtEnd := len(sqlBufStart)-1
 						for i, v := range(sqlBufStart) {
-							if int(v) < 32 {
+							if int(v) <= 8 {
 								sqlTxtEnd = i
 								break
 							}
