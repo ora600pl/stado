@@ -353,7 +353,6 @@ func main() {
 
 	var tBegin, tEnd time.Time //liczenie horyzontu czasu od: do: z pliku pcap
 	reusedCursor := uint(0) //Licznik uzytych ponownie kursorow z klienta
-
 	for packet := range packetSource.Packets() {
 		log.Println("Started packets loop") //Tylko pakiety z wartstwa aplikacyjna (TNS) beda parsowane
 		if app := packet.ApplicationLayer(); app != nil {
@@ -420,17 +419,18 @@ func main() {
 					}
 					//Ale czasem kartofelki i wuj wielki - wtedy trzeba okreslic dlugosc SQL bardziej manualnie.
 					//I to ssie - przydaloby sie znalezc na to lepsza regule
-					if sqlLen == uncertainSqlSize || sqlLen >= len(app.Payload()[mi[0]-4:]) {
+					if sqlLen == uncertainSqlSize || sqlLen >= len(app.Payload()[mi[0]-4:]) ||sqlLen == 0 {
 						log.Println("Can't determine sqlLen size")
 						sqlBufStart := app.Payload()[mi[0]:]
 						sqlTxtEnd := len(sqlBufStart)-1
 						for i, v := range(sqlBufStart) {
-							if int(v) == 0 {
+							if int(v) < 32 {
 								sqlTxtEnd = i
 								break
 							}
 						}
 						sqlTxt = string(sqlBufStart[0:sqlTxtEnd])
+						log.Println("Calculated len of SQL is: ", len(sqlTxt))
 					} else {
 						sqlTxt = string(app.Payload()[mi[0] : mi[0]+sqlLen])
 					}
