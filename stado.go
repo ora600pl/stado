@@ -23,6 +23,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -31,11 +32,10 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
-	"bytes"
-	"strconv"
-	"sort"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -68,7 +68,7 @@ type SQLtcp struct {
 	Ack          uint32
 	Timestamp    time.Time
 	IsReused     uint
-	RTT	     int64
+	RTT          int64
 }
 
 type SQLtcpSort []SQLtcp
@@ -81,15 +81,15 @@ var Conversations map[string][]SQLtcp
 
 type SQLstats struct {
 	SQLtxt         string
-	Elapsed_ms_all []float64 //Elapsed time from net perspective (RTT) Net Time 
-	Elapsed_ms_sum float64 //All elapsed times from net perspective per packet (RTT) Net Time
+	Elapsed_ms_all []float64 //Elapsed time from net perspective (RTT) Net Time
+	Elapsed_ms_sum float64   //All elapsed times from net perspective per packet (RTT) Net Time
 	Executions     uint
 	Packets        uint
 	Sessions       map[string]uint //key: ConversationId
 	ReusedCursors  uint
-	Elapsed_ms_app float64 //Wallclock from the whole app perspective
+	Elapsed_ms_app float64   //Wallclock from the whole app perspective
 	Ela_ms_app_all []float64 //Elapsed time from app perspective
-	SQLid	       string
+	SQLid          string
 }
 
 func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet_cnt uint, reusedCursors uint, sqlApp int64, sqlid string) {
@@ -102,50 +102,53 @@ func (s *SQLstats) Fill(sqlTxt string, sqlDuration int64, session string, packet
 	s.ReusedCursors += reusedCursors
 	s.Elapsed_ms_app += float64(sqlApp) / 1000000
 	s.Ela_ms_app_all = append(s.Ela_ms_app_all, float64(sqlApp)/1000000)
-	s.SQLid=sqlid
+	s.SQLid = sqlid
 }
 
 var SQLIdStats map[string]*SQLstats
 
-type SQLstatsSbEla []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed time from app perspective
+type SQLstatsSbEla []SQLstats              //SQL stats aggregated array for sorting - Sort by Elapsed time from app perspective
 func (a SQLstatsSbEla) Len() int           { return len(a) }
-func (a SQLstatsSbEla) Less(i, j int) bool { return a[i].Elapsed_ms_app<a[j].Elapsed_ms_app }
+func (a SQLstatsSbEla) Less(i, j int) bool { return a[i].Elapsed_ms_app < a[j].Elapsed_ms_app }
 func (a SQLstatsSbEla) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
+type SQLstatsSbElaEx []SQLstats    //SQL stats aggregated array for sorting - Sort by Elapsed Time Net / Execution
+func (a SQLstatsSbElaEx) Len() int { return len(a) }
+func (a SQLstatsSbElaEx) Less(i, j int) bool {
+	return a[i].Elapsed_ms_app/float64(a[i].Executions) < a[j].Elapsed_ms_app/float64(a[j].Executions)
+}
+func (a SQLstatsSbElaEx) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 
-type SQLstatsSbElaEx []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed Time Net / Execution 
-func (a SQLstatsSbElaEx) Len() int           { return len(a) }
-func (a SQLstatsSbElaEx) Less(i, j int) bool { return a[i].Elapsed_ms_app / float64(a[i].Executions) < a[j].Elapsed_ms_app / float64(a[j].Executions) }
-func (a SQLstatsSbElaEx) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-
-type SQLstatsSbPckt []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed time
+type SQLstatsSbPckt []SQLstats              //SQL stats aggregated array for sorting - Sort by Elapsed time
 func (a SQLstatsSbPckt) Len() int           { return len(a) }
-func (a SQLstatsSbPckt) Less(i, j int) bool { return a[i].Packets<a[j].Packets }
+func (a SQLstatsSbPckt) Less(i, j int) bool { return a[i].Packets < a[j].Packets }
 func (a SQLstatsSbPckt) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
-type SQLstatsSbRTT []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed time from net perspective
+type SQLstatsSbRTT []SQLstats              //SQL stats aggregated array for sorting - Sort by Elapsed time from net perspective
 func (a SQLstatsSbRTT) Len() int           { return len(a) }
-func (a SQLstatsSbRTT) Less(i, j int) bool { return a[i].Elapsed_ms_sum<a[j].Elapsed_ms_sum }
+func (a SQLstatsSbRTT) Less(i, j int) bool { return a[i].Elapsed_ms_sum < a[j].Elapsed_ms_sum }
 func (a SQLstatsSbRTT) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
-type SQLstatsSbRTTEx []SQLstats //SQL stats aggregated array for sorting - Sort by Elapsed Time Net / Execution
-func (a SQLstatsSbRTTEx) Len() int           { return len(a) }
-func (a SQLstatsSbRTTEx) Less(i, j int) bool { return a[i].Elapsed_ms_sum / float64(a[i].Executions) < a[j].Elapsed_ms_sum / float64(a[j].Executions) }
-func (a SQLstatsSbRTTEx) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+type SQLstatsSbRTTEx []SQLstats    //SQL stats aggregated array for sorting - Sort by Elapsed Time Net / Execution
+func (a SQLstatsSbRTTEx) Len() int { return len(a) }
+func (a SQLstatsSbRTTEx) Less(i, j int) bool {
+	return a[i].Elapsed_ms_sum/float64(a[i].Executions) < a[j].Elapsed_ms_sum/float64(a[j].Executions)
+}
+func (a SQLstatsSbRTTEx) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 
-type SQLstatsSbRat []SQLstats //SQL stats aggregated array for sorting - Sort by Ratio Ela Net / Ela App
-func (a SQLstatsSbRat) Len() int           { return len(a) }
-func (a SQLstatsSbRat) Less(i, j int) bool { return a[i].Elapsed_ms_sum / float64(a[i].Elapsed_ms_app) < a[j].Elapsed_ms_sum / float64(a[j].Elapsed_ms_app) }
-func (a SQLstatsSbRat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-
-
+type SQLstatsSbRat []SQLstats    //SQL stats aggregated array for sorting - Sort by Ratio Ela Net / Ela App
+func (a SQLstatsSbRat) Len() int { return len(a) }
+func (a SQLstatsSbRat) Less(i, j int) bool {
+	return a[i].Elapsed_ms_sum/float64(a[i].Elapsed_ms_app) < a[j].Elapsed_ms_sum/float64(a[j].Elapsed_ms_app)
+}
+func (a SQLstatsSbRat) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 
 func banner() {
 	fmt.Println("STADO (SQL Tracedump Analyzer Doing Oracle) by Radoslaw Kut and Kamil Stawiarski")
 	fmt.Println("Pcap file analyzer for finding TOP SQLs from an APP perspective")
 }
 
-func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *string, ipTnsBytes map[string] uint64) {
+func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *string, ipTnsBytes map[string]uint64) {
 	log.Println("Starting to sort aggregated stats")
 
 	//Zeby posortowac, trzeba przepisac mape zagregowanych statystyk do zwyklej kolekcji
@@ -162,26 +165,24 @@ func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *stri
 	} else if *sortBy == "pckt" {
 		sort.Sort(SQLstatsSbPckt(sortedStats))
 	} else if *sortBy == "rtt" {
-                sort.Sort(SQLstatsSbRTT(sortedStats))
-        } else if *sortBy == "rttx" {
-                sort.Sort(SQLstatsSbRTTEx(sortedStats))
-        }  else if *sortBy == "rat" {
-                sort.Sort(SQLstatsSbRat(sortedStats))
+		sort.Sort(SQLstatsSbRTT(sortedStats))
+	} else if *sortBy == "rttx" {
+		sort.Sort(SQLstatsSbRTTEx(sortedStats))
+	} else if *sortBy == "rat" {
+		sort.Sort(SQLstatsSbRat(sortedStats))
 	}
-
-
 
 	log.Println("Starting to disaplay SQLstats - len: ", len(SQLIdStats))
 	fmt.Println("SQL ID\t\tRatio\t\tEla App (ms)\tEla Net(ms)\tExec\tEla Stddev App\tEla App/Exec\tEla Stddev Net\tEla Net/Exec\tP\tS\tRC")
 	sep := strings.Repeat("-", 156)
-        fmt.Println(sep)
+	fmt.Println(sep)
 	var graphVal []chart.Value
 	var sumApp, sumNet float64
 	sqlCnt := 0
 	for _, sqlid := range sortedStats {
-		sqlCnt += 1
+		sqlCnt++
 		fmt.Printf("%s\t%f\t%f\t%f\t%d\t%f\t%f\t%f\t%f\t%d\t%d\t%d\n", sqlid.SQLid,
-			sqlid.Elapsed_ms_sum / sqlid.Elapsed_ms_app,
+			sqlid.Elapsed_ms_sum/sqlid.Elapsed_ms_app,
 			sqlid.Elapsed_ms_app,
 			sqlid.Elapsed_ms_sum,
 			sqlid.Executions,
@@ -196,9 +197,8 @@ func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *stri
 		sumApp += sqlid.Elapsed_ms_app
 		sumNet += sqlid.Elapsed_ms_sum
 
-		graphVal = append(graphVal, chart.Value{Value:
-				sqlid.Elapsed_ms_sum /
-						float64(sqlid.Executions), Label: sqlid.SQLid})
+		graphVal = append(graphVal, chart.Value{Value: sqlid.Elapsed_ms_sum /
+			float64(sqlid.Executions), Label: sqlid.SQLid})
 
 		var execs []float64
 		for exec := 0; exec < int(sqlid.Executions); exec++ {
@@ -236,7 +236,7 @@ func showStats(tBegin time.Time, tEnd time.Time, sortBy *string, chartsDir *stri
 	fmt.Println("Sum Net Time(s):", sumNet/1000, "\n")
 	fmt.Println("No. SQLs:", sqlCnt, "\n")
 
-	for ip := range(ipTnsBytes) {
+	for ip := range ipTnsBytes {
 		fmt.Println(ip, ipTnsBytes[ip]/1024, "kb")
 	}
 
@@ -312,7 +312,7 @@ func main() {
 	SQLIdStats = make(map[string]*SQLstats)
 
 	SQLslot := make(map[string]string)
-	ipTnsBytes := make(map[string] uint64)
+	ipTnsBytes := make(map[string]uint64)
 
 	handle, err := pcap.OpenOffline(*pcapFile)
 	if err != nil {
@@ -340,22 +340,26 @@ func main() {
 	bigEndianFlag := byte(0)
 	oneByteSizeFlag := byte(1)
 	uncertainSqlSize := 65279 // 0xFEFF at the beginning of SQL
-	usedCursorFlag := []byte{29, 6} //Packet length 29 and type DATA (0x06)
-	usedCursorFlagAfterError := []byte{48, 6} //Packet length 48 and type DATA (0x06)
-	endOfDataFlag := []byte{123, 5} //Flag in ResonseData 0x7b05 before ORA-01403 at the end of fetch
-	retOpiParam := byte(8) //TNS Header at @10
-	retStatus := byte(4) //TNS Header at @10
-	tnsPacketData := byte(6) //TNS Header at@4
-	plSQLCall := byte(76) //PL/SQL call 4C at @11
-	cursorCloseAll := byte(105) //0x69 @11
+	//usedCursorFlag := []byte{29, 6}           //Packet length 29 and type DATA (0x06)
+	//usedCursorFlagAfterError := []byte{48, 6} //Packet length 48 and type DATA (0x06)
+	ociExecAndFetchFlag := []byte{3, 78} //User OCI Functions (0x03) + Execute and Fetch (0x4e) @10
+	endOfDataFlag := []byte{123, 5}      //Flag in ResponseData 0x7b05 before ORA-01403 at the end of fetch
+	endOfDataFlagR := []byte{5, 123}     //Flag in ResponseData 0x057b before ORA-01403 at the end of fetch (Reverse byte orfer)
+	retOpiParam := byte(8)               //TNS Header at @10
+	retStatus := byte(4)                 //TNS Header at @10
+	tnsPacketData := byte(6)             //TNS Header at@4
+	plSQLCall := byte(76)                //PL/SQL call 4C at @11
+	cursorCloseAll := byte(105)          //0x69 @11
 
-	sqlTxtFlow := make(map[string] string) //mapa wykonanych polecen sql w danej konwersacji z przypisaniem do slotu otwartego kursora
+	sqlTxtFlow := make(map[string]string) //mapa wykonanych polecen sql w danej konwersacji z przypisaniem do slotu otwartego kursora
 
 	var tBegin, tEnd time.Time //liczenie horyzontu czasu od: do: z pliku pcap
-	reusedCursor := uint(0) //Licznik uzytych ponownie kursorow z klienta
+	reusedCursor := uint(0)    //Licznik uzytych ponownie kursorow z klienta
 	for packet := range packetSource.Packets() {
 		log.Println("Started packets loop") //Tylko pakiety z wartstwa aplikacyjna (TNS) beda parsowane
 		if app := packet.ApplicationLayer(); app != nil {
+			tnsLen := int(binary.BigEndian.Uint32(app.Payload()[0:4]))
+			log.Println("TNS Len is: ", tnsLen)
 			tcpLayer := packet.Layer(layers.LayerTypeTCP)
 			ipv4Layer := packet.Layer(layers.LayerTypeIPv4)
 			log.Println("Created tcp and ipv4 layers from packet")
@@ -366,12 +370,12 @@ func main() {
 			log.Println("Created tcp and ipv4 fields based on layers")
 			foundValidPacket := true //flag to filter out packets for testing purposes
 			responsePacket := false
-			/*Petla ma na celu ustalenie adresow IP bazy i klienta w badanym pakiecie. 
-			  Odbywa sie to na podstawie porownania zrodlowych i docelowych portow z zadeklarowanym 
+			/*Petla ma na celu ustalenie adresow IP bazy i klienta w badanym pakiecie.
+			  Odbywa sie to na podstawie porownania zrodlowych i docelowych portow z zadeklarowanym
 			  portem z flagi "-p" */
 			for _, checkIP := range dbIPs {
 				log.Println("Checking if " + ipv4.SrcIP.String() +
-						" or " + ipv4.DstIP.String() + " contains " + string(checkIP))
+					" or " + ipv4.DstIP.String() + " contains " + string(checkIP))
 
 				if strings.Contains(ipv4.SrcIP.String(), strings.TrimSpace(checkIP)) {
 					log.Println("Database ip: " + string(checkIP) + " found in source")
@@ -401,7 +405,7 @@ func main() {
 				if mi := rSQL.FindStringIndex(string(app.Payload())); mi != nil &&
 					!strings.Contains(string(app.Payload()), "DESCRIPTION") {
 
-					//W niektorych przypadkach dlugosc zapytania jest podawana w formie malego 
+					//W niektorych przypadkach dlugosc zapytania jest podawana w formie malego
 					//a w innych wielkiego indianina - jest flaga, ktora o tym mowi
 					sqlLen := 0
 					endianFlag := app.Payload()[mi[0]-5 : mi[0]-4]
@@ -419,12 +423,12 @@ func main() {
 					}
 					//Ale czasem kartofelki i wuj wielki - wtedy trzeba okreslic dlugosc SQL bardziej manualnie.
 					//I to ssie - przydaloby sie znalezc na to lepsza regule
-					if sqlLen == uncertainSqlSize || sqlLen >= len(app.Payload()[mi[0]-4:]) ||sqlLen == 0 {
+					if sqlLen == uncertainSqlSize || sqlLen >= len(app.Payload()[mi[0]-4:]) || sqlLen == 0 {
 						log.Println("Can't determine sqlLen size")
 						sqlBufStart := app.Payload()[mi[0]:]
-						sqlTxtEnd := len(sqlBufStart)-1
-						for i, v := range(sqlBufStart) {
-							if int(v) <= 8 {
+						sqlTxtEnd := len(sqlBufStart) - 1
+						for i, v := range sqlBufStart {
+							if int(v) < 32 {
 								sqlTxtEnd = i
 								break
 							}
@@ -442,25 +446,33 @@ func main() {
 					log.Println("Found SQL Text based on regular expression")
 					foundValidPacket = true
 
-				} else if len(app.Payload()) > 13 && (bytes.Equal(app.Payload()[3:5], usedCursorFlag) ||
-					  bytes.Equal(app.Payload()[3:5], usedCursorFlagAfterError)) {
+				} else if len(app.Payload()) > 13 && (bytes.Equal(app.Payload()[10:12], ociExecAndFetchFlag) ||
+					(tnsLen == 35 && bytes.Equal(app.Payload()[21:23], ociExecAndFetchFlag))) {
 					//Jesli w pakiecie request nie ma tresci zapytania, to znaczy ze uzywam otwartego kursora
 					log.Printf("Used: % 02x => %s, %d\n", app.Payload()[3:5], appPort, tcp.Seq)
 
-					//Na @13 jest 1B z ID slotu, na ktorym po stronie serwera jest zapamietany ten kursor
+					//Na @13 lub @14 jest 1B z ID slotu, na ktorym po stronie serwera jest zapamietany ten kursor
 					//klient prosi o wykonanie tego kursora ze slotu, wiec ja sobie sprytnie ten slot biere i zapmietuje
-					cursorSlot := strconv.Itoa(int(app.Payload()[13]))
-					//No i go pobieram. Zapamietanie jest na poziomie rozkminy pakietu response - 
+					cursorSlot := "x"
+					if tnsLen == 29 {
+						cursorSlot = strconv.Itoa(int(app.Payload()[13]))
+					} else if tnsLen == 24 {
+						cursorSlot = strconv.Itoa(int(app.Payload()[14]))
+					} else if tnsLen == 35 {
+						cursorSlot = strconv.Itoa(int(app.Payload()[25]))
+					}
+					log.Println("Checking for remembered cursor slot of reused cursor: ", cursorSlot)
+					//No i go pobieram. Zapamietanie jest na poziomie rozkminy pakietu response -
 					//bo wtedy ony serwer to zwraca
-					sqlTxt = SQLslot[conversationId + "_" + cursorSlot]
+					sqlTxt = SQLslot[conversationId+"_"+cursorSlot]
 
 					log.Println("Called SQL text from reused cursor: ",
-							sqlTxt, appPort, tcp.Seq, tcp.Ack, conversationId + "_" + cursorSlot)
+						sqlTxt, appPort, tcp.Seq, tcp.Ack, conversationId+"_"+cursorSlot)
 
-					reusedCursor = 1 //Oznaczam sobie, ze to taki sprytny otwarty kursorek 
+					reusedCursor = 1 //Oznaczam sobie, ze to taki sprytny otwarty kursorek
 					foundValidPacket = true
 				} else if len(app.Payload()) > 34 && (app.Payload()[11] == plSQLCall ||
-						(app.Payload()[11] == cursorCloseAll && app.Payload()[34] == plSQLCall)){
+					(app.Payload()[11] == cursorCloseAll && app.Payload()[34] == plSQLCall)) {
 					log.Println("This is a PL/SQL Call")
 					sqlTxt = "PLSQL_CALL"
 					foundValidPacket = true
@@ -472,16 +484,23 @@ func main() {
 
 					sqlTxt = "SQL_END"
 					endOfDataI := bytes.Index(app.Payload(), endOfDataFlag) //Jest flaga, na koniec danych w pakiecie endOfDataFlag(0x7b05)
+					cursorSlot := "-1"
+					if endOfDataI == -1 {
+						endOfDataI = bytes.Index(app.Payload(), endOfDataFlagR)     //Jest flaga, na koniec danych w pakiecie endOfDataFlag(0x057b)
+						cursorSlot = strconv.Itoa(int(app.Payload()[endOfDataI+5])) //I @+5 jest slocik, pod ktorym Pan Serwer kurson ony zapamietal
+					} else {
+						cursorSlot = strconv.Itoa(int(app.Payload()[endOfDataI+6])) //I @+6 jest slocik, pod ktorym Pan Serwer kurson ony zapamietal
+					}
 					log.Println("End Of Data Byte is: ", endOfDataI)
-					cursorSlot := strconv.Itoa(int(app.Payload()[endOfDataI+6])) //I @+6 jest slocik, pod ktorym Pan Serwer kurson ony zapamietal
+
 					log.Println("Cursor Slot is: ", cursorSlot)
 
-					SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId] //To i ja dla tej konwersacyji tresc SQL pamietam
+					SQLslot[conversationId+"_"+cursorSlot] = sqlTxtFlow[conversationId] //To i ja dla tej konwersacyji tresc SQL pamietam
 					foundValidPacket = true
 
 				} else if len(app.Payload()) > 20 &&
-					  !strings.Contains(string(app.Payload()), "AUTH") &&
-					  app.Payload()[4] == tnsPacketData {
+					!strings.Contains(string(app.Payload()), "AUTH") &&
+					app.Payload()[4] == tnsPacketData {
 					//Ale nie zawsze jest tak pieknie, ze reponse ma koniec danych, oj nie zawsze!
 					//Czasem to pakiet po DML a wtedy nic ino flagi retOpiParam albo retStatus
 					//Ale i tam numery slotow znalezn sposobna
@@ -489,16 +508,16 @@ func main() {
 						cursorSlot := strconv.Itoa(int(app.Payload()[21]))
 						log.Println("Cursor Slot in RetOpiParam is: ", cursorSlot, appPort, tcp.Seq)
 
-						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
+						SQLslot[conversationId+"_"+cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
 						sqlTxt = "SQL_END"
 
 					} else if app.Payload()[10] == retStatus {
 
 						cursorSlot := strconv.Itoa(int(app.Payload()[28]))
-                                                log.Println("Cursor Slot in RetStatus is: ", cursorSlot, appPort, tcp.Seq)
+						log.Println("Cursor Slot in RetStatus is: ", cursorSlot, appPort, tcp.Seq)
 
-						SQLslot[conversationId + "_" + cursorSlot] = sqlTxtFlow[conversationId]
+						SQLslot[conversationId+"_"+cursorSlot] = sqlTxtFlow[conversationId]
 						foundValidPacket = true
 						sqlTxt = "SQL_END"
 
@@ -518,7 +537,7 @@ func main() {
 
 				rtt := int64(0) //To ze Round Trip Time, ze zerem inicjowany a potem liczony
 				//Ale tylko jesli pakiet jest pakietem response, od ktorego ostatni timestamp trza odjac, hej!
-				if responsePacket && len(Conversations[conversationId]) >= 1{
+				if responsePacket && len(Conversations[conversationId]) >= 1 {
 					lastIdx := len(Conversations[conversationId]) - 1
 					//No to biere ostatni zarejestrowany timestamp pakietu tej konwersacji i se odejmuje
 					rtt = packet.Metadata().Timestamp.Sub(Conversations[conversationId][lastIdx].Timestamp).Nanoseconds()
@@ -532,10 +551,10 @@ func main() {
 					Ack:          tcp.Ack,
 					Timestamp:    packet.Metadata().Timestamp,
 					IsReused:     reusedCursor,
-					RTT:	      rtt,
+					RTT:          rtt,
 				})
-				log.Println("Added packaet to conversation ID: " +
-						conversationId, sqlTxt, sqlid.Get(sqlTxt), len(sqlTxt), reusedCursor, rtt)
+				log.Println("Added packaet to conversation ID: "+
+					conversationId, sqlTxt, sqlid.Get(sqlTxt), len(sqlTxt), reusedCursor, rtt)
 				reusedCursor = 0
 			}
 		}
@@ -559,7 +578,7 @@ func main() {
 			if sqlId != "+" && idx < conversationLen-2 && Conversations[c][idx+1].SQL_id != sqlId && Conversations[c][idx+1].SQL != "_" {
 				newSqlId = true
 			}
-			if tPrev.IsZero() && sqlId != "+"{ //Dla pierwszego pakietu timestamp zapamietuje
+			if tPrev.IsZero() && sqlId != "+" { //Dla pierwszego pakietu timestamp zapamietuje
 				tPrev = p.Timestamp
 			}
 			if sqlId != "+" {
@@ -569,13 +588,13 @@ func main() {
 
 			//No jesli to nie jest bylejaki pakiet, to ma tresc zapytania, a wtedy to poczatek jest flow
 			//To mozna ustalic kiedy sie to zaczelo i jaka tresc zapytania przyjac i sqlid itp
-			if mi := rSQL.FindStringIndex(p.SQL); mi != nil  && tB.IsZero() { //p.SQL != "_" && p.SQL != "SQL_END" {
+			if mi := rSQL.FindStringIndex(p.SQL); mi != nil && tB.IsZero() { //p.SQL != "_" && p.SQL != "SQL_END" {
 				tB = p.Timestamp
 				sqlTxt = p.SQL
 				sqlId = p.SQL_id
 				reusedCursors += p.IsReused
 			} else if sqlId != "+" && pcktCnt > 1 { //count RTT minus first packet from first response => avoid counting DB Time from first SQL execution
-				RTT += p.RTT //RTT to ja dodaje, zeby czas sieciowy ogarnac. 
+				RTT += p.RTT //RTT to ja dodaje, zeby czas sieciowy ogarnac.
 				//Bo pierwszy pakiet z poczatku flow pomijam calkiem - zeby nie liczyc czasu na DBTime poswieconego
 				//No i pominac trzeba wszelkie niezdefiniowane sqlid, bo to sa pakiety nieobslugiwane
 			}
@@ -589,10 +608,10 @@ func main() {
 			//A to wszystko znaczy, ze to koniec FLOW
 			//Bo dla SELECT to bedzie oczywiscie SQL_END jako flaga, a dla DML to juz po prostu kolejny pakiet
 			//Wiec dla ustalonego SQLID, jesli mamy znacznik konca, lub tresc zapytania jest ustalona we flow
-			//i jest to kolejny pakiet po prostu, ale tresc zapytania to nie SELECT lub WITH 
+			//i jest to kolejny pakiet po prostu, ale tresc zapytania to nie SELECT lub WITH
 			//bo w tych flow jest dlugi i musze miec znacznik konca (SQL_END) to wtedy ogarniaj statystyki
 			if sqlId != "+" && (p.SQL == "SQL_END" || newSqlId ||
-						(len(sqlTxt) > 1 && p.SQL == "_" && strings.ToUpper(sqlTxt)[0] != 'S' && strings.ToUpper(sqlTxt)[0] != 'W')) {
+				(len(sqlTxt) > 1 && p.SQL == "_" && strings.ToUpper(sqlTxt)[0] != 'S' && strings.ToUpper(sqlTxt)[0] != 'W')) {
 				tE = p.Timestamp
 				sqlDuration = tE.Sub(tB)
 				//sqlDuration = packetDuration //Valid SQL duration from app perspective (wallclock)
@@ -614,7 +633,7 @@ func main() {
 					//Jesli nie, to glosno o tym krzycze
 					log.Println("Something went wrong with counting, casuse rtt is mniej niz zero!", RTT, sqlTxt, c, sqlId, packetDuration)
 				}
-				//No i na koniec takiego podliczenia statsow to to wszystko sobie ladnie zeruje. 
+				//No i na koniec takiego podliczenia statsow to to wszystko sobie ladnie zeruje.
 				//To dzialac ma prawo tylko, jesli pakiety sa w dobrej kolejnosci,
 				//jesli natomiast by SEQ i ACK kompletnie sie nie zgadzaly w kolejnosci to dupa
 				sqlTxt = "+"
