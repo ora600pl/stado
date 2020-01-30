@@ -447,7 +447,7 @@ func main() {
 					foundValidPacket = true
 
 				} else if len(app.Payload()) > 13 && (bytes.Equal(app.Payload()[10:12], ociExecAndFetchFlag) ||
-					(tnsLen == 35 && bytes.Equal(app.Payload()[21:23], ociExecAndFetchFlag))) {
+					(tnsLen >= 35 && bytes.Equal(app.Payload()[21:23], ociExecAndFetchFlag))) {
 					//Jesli w pakiecie request nie ma tresci zapytania, to znaczy ze uzywam otwartego kursora
 					log.Printf("Used: % 02x => %s, %d\n", app.Payload()[3:5], appPort, tcp.Seq)
 
@@ -458,7 +458,7 @@ func main() {
 						cursorSlot = strconv.Itoa(int(app.Payload()[13]))
 					} else if tnsLen == 24 {
 						cursorSlot = strconv.Itoa(int(app.Payload()[14]))
-					} else if tnsLen == 35 {
+					} else if tnsLen >= 35 {
 						cursorSlot = strconv.Itoa(int(app.Payload()[25]))
 					}
 					log.Println("Checking for remembered cursor slot of reused cursor: ", cursorSlot)
