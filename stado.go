@@ -575,7 +575,7 @@ func main() {
 		conversationLen := len(Conversations[c])
 		//Dla kazdej konwersjacji jade po wszystkich jej pakietach
 		for idx, p := range Conversations[c] {
-			if sqlId != "+" && idx < conversationLen-2 && Conversations[c][idx+1].SQL_id != sqlId && Conversations[c][idx+1].SQL != "_" {
+			if sqlId != "+" && idx < conversationLen-2 /*&& Conversations[c][idx+1].SQL_id != sqlId */ && Conversations[c][idx+1].SQL != "_" {
 				newSqlId = true
 			}
 			if tPrev.IsZero() && sqlId != "+" { //Dla pierwszego pakietu timestamp zapamietuje
