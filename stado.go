@@ -403,7 +403,7 @@ func main() {
 				//Sprawdzenie czy request zawiera tresc polecenia SQL z wyrazenia regularnego
 				// i nie jest jednoczesnie przeslaniem deskryptora polaczenia
 				if mi := rSQL.FindStringIndex(string(app.Payload())); mi != nil &&
-					!strings.Contains(string(app.Payload()), "DESCRIPTION") {
+					!strings.Contains(string(app.Payload()), "DESCRIPTION")  && !strings.Contains(string(app.Payload()), ")(METHOD=") {
 
 					//W niektorych przypadkach dlugosc zapytania jest podawana w formie malego
 					//a w innych wielkiego indianina - jest flaga, ktora o tym mowi
@@ -447,7 +447,7 @@ func main() {
 					foundValidPacket = true
 
 				} else if len(app.Payload()) > 13 && (bytes.Equal(app.Payload()[10:12], ociExecAndFetchFlag) ||
-					(tnsLen >= 35 && bytes.Equal(app.Payload()[21:23], ociExecAndFetchFlag))) {
+					(tnsLen >= 35 && len(app.Payload()) > 21 && bytes.Equal(app.Payload()[21:23], ociExecAndFetchFlag))) {
 					//Jesli w pakiecie request nie ma tresci zapytania, to znaczy ze uzywam otwartego kursora
 					log.Printf("Used: % 02x => %s, %d\n", app.Payload()[3:5], appPort, tcp.Seq)
 
